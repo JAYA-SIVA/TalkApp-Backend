@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # 🗣️ Talk App - Backend
 
 Welcome to the **Talk App Backend**, a modern and scalable social media backend built with **Node.js**, **Express**, **MongoDB**, and **Cloudinary**.  
@@ -38,3 +39,6 @@ It powers features like posts, chat, reels, stories (Clicks), notifications, boo
 =======
 # Talk3
 >>>>>>> d25b233fc19ba1e58dd2f7e83953680cf9877dba
+=======
+# Talk4
+>>>>>>> 85a0611831b308a048c676317af96c852883a08c
