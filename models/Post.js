@@ -1,53 +1,57 @@
+// models/Post.js
+
 const mongoose = require("mongoose");
 
-// 🔹 Subdocument schema for comments
-const commentSchema = new mongoose.Schema({
+const postSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: true,
   },
+  type: {
+    type: String,
+    enum: ["post", "tweet", "reel", "story"],
+    default: "post",
+  },
   text: {
     type: String,
-    required: true,
+    default: "", // for tweet-style text
   },
-  timestamp: {
+  images: [
+    {
+      type: String, // Cloudinary image URLs
+    },
+  ],
+  video: {
+    type: String, // Cloudinary video URL
+  },
+  caption: {
+    type: String,
+    default: "",
+  },
+  likes: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
+  comments: [
+    {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      comment: String,
+      createdAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+  createdAt: {
     type: Date,
     default: Date.now,
   },
 });
-
-// 🔹 Main Post schema
-const postSchema = new mongoose.Schema(
-  {
-    caption: {
-      type: String,
-    },
-    mediaUrl: {
-      type: String,
-      required: true,
-    },
-    mediaType: {
-      type: String,
-      enum: ["image", "video"],
-      default: "image",
-    },
-    postedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
-    likes: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-      },
-    ],
-    comments: [commentSchema],
-  },
-  {
-    timestamps: true, // Adds createdAt and updatedAt
-  }
-);
 
 module.exports = mongoose.model("Post", postSchema);

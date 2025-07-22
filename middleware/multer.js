@@ -1,38 +1,40 @@
-// backend/middleware/multer.js
+// middleware/multer.js
+
 const multer = require("multer");
-const { v4: uuidv4 } = require("uuid");
-const path = require("path");
-const cloudinary = require("cloudinary").v2;
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const cloudinary = require("../config/cloudinary");
 
-// Cloudinary config (ensure .env has correct values)
-cloudinary.config({
-  cloud_name: process.env.CLOUD_NAME,
-  api_key: process.env.CLOUD_API_KEY,
-  api_secret: process.env.CLOUD_API_SECRET,
-});
-
-// Define Cloudinary storage
+// ✅ Configure Cloudinary storage
 const storage = new CloudinaryStorage({
-  cloudinary,
+  cloudinary: cloudinary,
   params: async (req, file) => {
-    let folder = "uploads";
-
-    // Optional logic to detect folder
-    if (req.originalUrl.includes("/reels")) folder = "reels";
-    else if (req.originalUrl.includes("/story")) folder = "stories";
-    else if (req.originalUrl.includes("/talk")) folder = "posts";
-    else if (req.originalUrl.includes("/profile")) folder = "profiles";
+    const ext = file.mimetype.split("/")[1];
 
     return {
-      folder,
-      resource_type: "auto", // Automatically detects image or video
-      public_id: uuidv4() + path.extname(file.originalname),
+      folder: "talk-app",
+      resource_type: "auto",
+      public_id: `${Date.now()}-${file.originalname}`,
+      format: ext
     };
   },
 });
 
-// Multer upload middleware
-const upload = multer({ storage });
+// ✅ Multer middleware using Cloudinary storage
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // Max 100MB
+  },
+  fileFilter: (req, file, cb) => {
+    const isImage = file.mimetype.startsWith("image/");
+    const isVideo = file.mimetype.startsWith("video/");
+    
+    if (isImage || isVideo) {
+      cb(null, true);
+    } else {
+      cb(new Error("❌ Only image and video files are allowed!"), false);
+    }
+  },
+});
 
 module.exports = upload;

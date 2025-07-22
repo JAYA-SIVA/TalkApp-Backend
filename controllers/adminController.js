@@ -1,92 +1,47 @@
+// controllers/adminController.js
+
 const User = require("../models/User");
-const Post = require("../models/Post");
-const Report = require("../models/Report"); // You need to create this model
 const mongoose = require("mongoose");
+const ObjectId = mongoose.Types.ObjectId;
 
-// 🚫 Block a user
-exports.blockUser = async (req, res) => {
-  const { userId } = req.params;
+// 📌 Get all users (Admin-only)
+exports.getAllUsers = async (req, res) => {
+  try {
+    const users = await User.find().select("-password"); // Exclude password
+    res.status(200).json(users);
+  } catch (err) {
+    console.error("❌ Failed to fetch users:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+};
+
+// 🚫 Block or Unblock a user
+exports.toggleBlockUser = async (req, res) => {
+  const { id } = req.params;
+
+  // ✅ Validate ObjectId
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "Invalid user ID" });
+  }
 
   try {
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ error: "User not found" });
+    const user = await User.findById(id);
 
-    user.isBlocked = true;
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // 🔁 Toggle block status
+    user.isBlocked = !user.isBlocked;
     await user.save();
 
-    res.status(200).json({ message: "User has been blocked." });
-  } catch (err) {
-    console.error("Block error:", err);
-    res.status(500).json({ error: "Failed to block user" });
-  }
-};
-
-// ✅ Unblock a user
-exports.unblockUser = async (req, res) => {
-  const { userId } = req.params;
-
-  try {
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    user.isBlocked = false;
-    await user.save();
-
-    res.status(200).json({ message: "User has been unblocked." });
-  } catch (err) {
-    console.error("Unblock error:", err);
-    res.status(500).json({ error: "Failed to unblock user" });
-  }
-};
-
-// 🗑️ Delete a post
-exports.deletePost = async (req, res) => {
-  const { postId } = req.params;
-
-  try {
-    const post = await Post.findById(postId);
-    if (!post) return res.status(404).json({ error: "Post not found" });
-
-    await Post.findByIdAndDelete(postId);
-
-    res.status(200).json({ message: "Post deleted successfully." });
-  } catch (err) {
-    console.error("Delete post error:", err);
-    res.status(500).json({ error: "Failed to delete post" });
-  }
-};
-
-// ⚠️ Report a user or post
-exports.report = async (req, res) => {
-  const { targetId, type, reason } = req.body;
-  const reporterId = req.user._id;
-
-  try {
-    const newReport = new Report({
-      reporter: reporterId,
-      target: targetId,
-      type, // 'user' or 'post'
-      reason
+    res.status(200).json({
+      message: `User has been ${user.isBlocked ? "blocked" : "unblocked"}.`,
+      userId: user._id,
+      isBlocked: user.isBlocked,
     });
-
-    await newReport.save();
-    res.status(201).json({ message: "Report submitted." });
   } catch (err) {
-    console.error("Report error:", err);
-    res.status(500).json({ error: "Failed to submit report" });
-  }
-};
-
-// 👁️ View all reports (admin only)
-exports.getAllReports = async (req, res) => {
-  try {
-    const reports = await Report.find({})
-      .populate("reporter", "username")
-      .sort({ createdAt: -1 });
-
-    res.status(200).json(reports);
-  } catch (err) {
-    console.error("Fetch reports error:", err);
-    res.status(500).json({ error: "Failed to fetch reports" });
+    console.error("❌ Failed to toggle block:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };

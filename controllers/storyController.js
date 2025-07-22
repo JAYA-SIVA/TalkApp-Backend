@@ -1,65 +1,92 @@
-// backend/controllers/storyController.js
 const Story = require("../models/Story");
-const cloudinary = require("cloudinary").v2;
 
-// Upload a new story (Click)
-exports.uploadStory = async (req, res) => {
+// ✅ Upload a new story
+const uploadStory = async (req, res) => {
   try {
-    const { userId } = req.body;
-    const file = req.file?.path;
+    const file = req.file;
+    const { caption } = req.body;
 
     if (!file) {
-      return res.status(400).json({ error: "Media file is required" });
+      return res.status(400).json({ message: "No file uploaded" });
     }
 
-    // Upload to Cloudinary
-    const result = await cloudinary.uploader.upload(file, {
-      folder: "clicks",
-      resource_type: "auto", // supports image & video
+    const fileType = file.mimetype.startsWith("video") ? "video" : "image";
+
+    const story = await Story.create({
+      userId: req.user._id,
+      mediaUrl: file.path, // Cloudinary URL from multer
+      caption,
+      type: fileType,
     });
 
-    const newStory = await Story.create({
-      userId,
-      mediaUrl: result.secure_url,
-      mediaType: result.resource_type.startsWith("video") ? "video" : "image",
+    res.status(201).json({
+      message: "Story uploaded successfully",
+      story,
     });
-
-    res.status(201).json({ message: "Click uploaded successfully", story: newStory });
-  } catch (error) {
-    res.status(500).json({ error: "Upload failed", details: error.message });
+  } catch (err) {
+    console.error("❌ Upload Story Error:", err.message);
+    return res.status(500).json({ message: err.message });
   }
 };
 
-// Get all active Clicks (last 24 hours)
-exports.getStories = async (req, res) => {
+// ✅ Get all stories
+const getAllStories = async (req, res) => {
   try {
-    const timeLimit = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
-
-    const stories = await Story.find({ createdAt: { $gte: timeLimit } })
+    const stories = await Story.find()
       .sort({ createdAt: -1 })
       .populate("userId", "username profilePic");
 
     res.status(200).json(stories);
-  } catch (error) {
-    res.status(500).json({ error: "Fetching Clicks failed", details: error.message });
+  } catch (err) {
+    console.error("❌ Get Stories Error:", err.message);
+    res.status(500).json({ message: err.message });
   }
 };
 
-// Delete a Click (story)
-exports.deleteStory = async (req, res) => {
+// ✅ Mark a story as viewed by user
+const viewStory = async (req, res) => {
   try {
-    const { storyId, userId } = req.body;
+    const story = await Story.findById(req.params.id);
+    if (!story) {
+      return res.status(404).json({ message: "Story not found" });
+    }
 
-    const story = await Story.findById(storyId);
-    if (!story) return res.status(404).json({ error: "Click not found" });
+    if (!story.views.includes(req.user._id)) {
+      story.views.push(req.user._id);
+      await story.save();
+    }
 
-    if (story.userId.toString() !== userId) {
-      return res.status(403).json({ error: "Unauthorized action" });
+    res.json({ message: "Story viewed" });
+  } catch (err) {
+    console.error("❌ View Story Error:", err.message);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ Delete a story
+const deleteStory = async (req, res) => {
+  try {
+    const story = await Story.findById(req.params.id);
+    if (!story) {
+      return res.status(404).json({ message: "Story not found" });
+    }
+
+    if (story.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Unauthorized to delete" });
     }
 
     await story.deleteOne();
-    res.status(200).json({ message: "Click deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ error: "Delete failed", details: error.message });
+    res.json({ message: "Story deleted successfully" });
+  } catch (err) {
+    console.error("❌ Delete Story Error:", err.message);
+    res.status(500).json({ message: err.message });
   }
+};
+
+// ✅ Export all
+module.exports = {
+  uploadStory,
+  getAllStories,
+  viewStory,
+  deleteStory,
 };

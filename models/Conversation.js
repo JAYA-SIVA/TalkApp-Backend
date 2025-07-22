@@ -1,27 +1,7 @@
+// models/Conversation.js
+
 const mongoose = require("mongoose");
 
-// Schema for individual messages
-const messageSchema = new mongoose.Schema({
-  senderId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
-  message: {
-    type: String,
-    default: "",
-  },
-  mediaUrl: {
-    type: String,
-    default: "", // For images/videos
-  },
-  timestamp: {
-    type: Date,
-    default: Date.now,
-  },
-});
-
-// Schema for the conversation
 const conversationSchema = new mongoose.Schema(
   {
     members: [
@@ -30,9 +10,15 @@ const conversationSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
-    messages: [messageSchema],
+    lastMessage: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
-  { timestamps: true } // Automatically adds createdAt and updatedAt
+  {
+    timestamps: true, // adds createdAt and updatedAt automatically
+  }
 );
 
 module.exports = mongoose.model("Conversation", conversationSchema);
