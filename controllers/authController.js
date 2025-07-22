@@ -9,6 +9,10 @@ let refreshTokens = [];
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
 
+  // ✅ ADD THIS LINE BELOW
+  console.log("ACCESS_TOKEN_SECRET:", process.env.ACCESS_TOKEN_SECRET);
+  console.log("REFRESH_TOKEN_SECRET:", process.env.REFRESH_TOKEN_SECRET);
+
   const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
     expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
   });
