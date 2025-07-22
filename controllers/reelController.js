@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const cloudinary = require("../config/cloudinary");
-const Reel = require("../models/Reel");
+const Reel = require("../models/reel");
 
 // ✅ Upload a new reel
 exports.uploadReel = async (req, res) => {
