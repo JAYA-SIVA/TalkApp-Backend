@@ -51,4 +51,8 @@ router.get("/comments/:id", getComments);
 // ❌ Delete a post by ID
 router.delete("/delete/:id", auth, deletePost);
 
+// 🏠 Authenticated Home Feed (used in Android)
+router.get("/", auth, getAllPosts);
+
+
 module.exports = router;
