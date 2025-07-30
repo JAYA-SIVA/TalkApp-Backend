@@ -2,7 +2,7 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// ⚠️ In-memory store for refresh tokens (Use Redis/DB in production)
+// ⚠️ In-memory store for refresh tokens (use Redis/DB in production)
 let refreshTokens = [];
 
 // ✅ Generate Access and Refresh Tokens
@@ -26,8 +26,9 @@ exports.registerUser = async (req, res) => {
 
   try {
     const existingUser = await User.findOne({ email });
-    if (existingUser)
+    if (existingUser) {
       return res.status(400).json({ message: "Email already registered" });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -38,7 +39,7 @@ exports.registerUser = async (req, res) => {
     });
 
     const tokens = generateTokens(newUser);
-    refreshTokens.push(tokens.refreshToken); // Save refresh token
+    refreshTokens.push(tokens.refreshToken); // Save refresh token in memory
 
     res.status(201).json({
       _id: newUser._id,
@@ -78,16 +79,19 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// 🔁 Refresh Access Token
+// 🔁 Refresh Access Token (✔️ Fixed to match request)
 exports.refreshToken = (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(401).json({ message: "Refresh token required" });
+  const refreshToken = req.body.refreshToken || req.headers['x-refresh-token'];
 
-  if (!refreshTokens.includes(token)) {
+  if (!refreshToken) {
+    return res.status(401).json({ message: "Refresh token required" });
+  }
+
+  if (!refreshTokens.includes(refreshToken)) {
     return res.status(403).json({ message: "Invalid refresh token" });
   }
 
-  jwt.verify(token, process.env.REFRESH_TOKEN_SECRET, (err, user) => {
+  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, user) => {
     if (err) return res.status(403).json({ message: "Token expired or invalid" });
 
     const newAccessToken = jwt.sign(
@@ -100,9 +104,10 @@ exports.refreshToken = (req, res) => {
   });
 };
 
-// 🚪 Logout (Invalidate refresh token)
+// 🚪 Logout (invalidate refresh token)
 exports.logout = (req, res) => {
-  const { token } = req.body;
-  refreshTokens = refreshTokens.filter((t) => t !== token);
+  const { refreshToken } = req.body;
+
+  refreshTokens = refreshTokens.filter((t) => t !== refreshToken);
   res.status(200).json({ message: "Logged out successfully" });
 };
