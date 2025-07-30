@@ -1,5 +1,3 @@
-// routes/auth.js
-
 const express = require("express");
 const router = express.Router();
 
@@ -7,33 +5,20 @@ const router = express.Router();
 const {
   registerUser,
   loginUser,
-  refreshToken,
-  logout,
+  refreshToken,  // 🔁 New: To refresh access token
+  logout         // 🔓 New: To log out
 } = require("../controllers/authController");
 
-// ─────────────────────────────────────────────
-// ✅ Register New User
-// POST /api/auth/register
-// ─────────────────────────────────────────────
+// ✅ Register
 router.post("/register", registerUser);
 
-// ─────────────────────────────────────────────
-// ✅ Login User
-// POST /api/auth/login
-// ─────────────────────────────────────────────
+// ✅ Login
 router.post("/login", loginUser);
 
-// ─────────────────────────────────────────────
-// 🔁 Refresh Access Token using Refresh Token
-// POST /api/auth/refresh-token
-// Body: { token }
-// ─────────────────────────────────────────────
-router.post("/refresh-token", refreshToken);
+// 🔁 Refresh Access Token
+router.post("/refresh", refreshToken);
 
-// 🔓 Logout (invalidate refresh token)
-// POST /api/auth/logout
-// Body: { token }
-// ─────────────────────────────────────────────
+// 🔓 Logout
 router.post("/logout", logout);
 
 module.exports = router;
