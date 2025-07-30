@@ -11,9 +11,11 @@ const protect = async (req, res, next) => {
   ) {
     try {
       token = req.headers.authorization.split(" ")[1];
+      console.log("🔐 Access Token:", token);
 
       // ✅ Decode token using ACCESS_TOKEN_SECRET
       const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+      console.log("🔐 Decoded ID:", decoded.id);
 
       // ✅ Validate decoded.id
       if (!decoded.id || !mongoose.Types.ObjectId.isValid(decoded.id)) {
@@ -22,6 +24,8 @@ const protect = async (req, res, next) => {
 
       // ✅ Fetch user from database
       req.user = await User.findById(decoded.id).select("-password");
+      console.log("🔐 Loaded User:", req.user?.username || "Not found");
+
       if (!req.user) {
         return res.status(404).json({ message: "User not found" });
       }
