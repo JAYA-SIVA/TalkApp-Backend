@@ -2,7 +2,7 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// ⚠️ In-memory store for refresh tokens (use Redis/DB in production)
+// ⚠️ In-memory store for refresh tokens (in production, use Redis or DB)
 let refreshTokens = [];
 
 // ✅ Generate Access and Refresh Tokens
@@ -10,11 +10,11 @@ const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
 
   const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
-    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m", // default 15 mins
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
   });
 
   const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
-    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d", // default 30 days
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
   });
 
   return { accessToken, refreshToken };
@@ -79,9 +79,9 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// 🔁 Refresh Access Token (✔️ Fixed to match request)
+// 🔁 Refresh Access Token
 exports.refreshToken = (req, res) => {
-  const refreshToken = req.body.refreshToken || req.headers['x-refresh-token'];
+  const refreshToken = req.body.refreshToken || req.headers["x-refresh-token"];
 
   if (!refreshToken) {
     return res.status(401).json({ message: "Refresh token required" });
@@ -91,11 +91,13 @@ exports.refreshToken = (req, res) => {
     return res.status(403).json({ message: "Invalid refresh token" });
   }
 
-  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ message: "Token expired or invalid" });
+  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ message: "Token expired or invalid" });
+    }
 
     const newAccessToken = jwt.sign(
-      { id: user.id, username: user.username },
+      { id: decoded.id, username: decoded.username },
       process.env.ACCESS_TOKEN_SECRET,
       { expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m" }
     );
@@ -104,10 +106,14 @@ exports.refreshToken = (req, res) => {
   });
 };
 
-// 🚪 Logout (invalidate refresh token)
+// 🚪 Logout
 exports.logout = (req, res) => {
   const { refreshToken } = req.body;
 
-  refreshTokens = refreshTokens.filter((t) => t !== refreshToken);
+  if (!refreshToken) {
+    return res.status(400).json({ message: "Refresh token missing" });
+  }
+
+  refreshTokens = refreshTokens.filter((token) => token !== refreshToken);
   res.status(200).json({ message: "Logged out successfully" });
 };
