@@ -55,11 +55,18 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// ✅ Get by ID
+// ✅ Get by ID (with ObjectId validation)
 exports.getUserProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select("-password");
+    const userId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID format" });
+    }
+
+    const user = await User.findById(userId).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
+
     res.json(user);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -124,10 +131,14 @@ exports.updateUserProfile = async (req, res) => {
 // ✅ Follow
 exports.followUser = async (req, res) => {
   try {
-    const targetId = new mongoose.Types.ObjectId(req.params.id);
-    const currentId = new mongoose.Types.ObjectId(req.user.id);
+    const targetId = req.params.id;
+    const currentId = req.user.id;
 
-    if (targetId.equals(currentId))
+    if (!mongoose.Types.ObjectId.isValid(targetId) || !mongoose.Types.ObjectId.isValid(currentId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    if (targetId === currentId)
       return res.status(400).json({ message: "Cannot follow self" });
 
     const target = await User.findById(targetId);
@@ -150,15 +161,19 @@ exports.followUser = async (req, res) => {
 // ✅ Unfollow
 exports.unfollowUser = async (req, res) => {
   try {
-    const targetId = new mongoose.Types.ObjectId(req.params.id);
-    const currentId = new mongoose.Types.ObjectId(req.user.id);
+    const targetId = req.params.id;
+    const currentId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(targetId) || !mongoose.Types.ObjectId.isValid(currentId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
 
     const target = await User.findById(targetId);
     const current = await User.findById(currentId);
     if (!target || !current) return res.status(404).json({ message: "User not found" });
 
-    target.followers = target.followers.filter(id => !id.equals(currentId));
-    current.following = current.following.filter(id => !id.equals(targetId));
+    target.followers = target.followers.filter(id => id.toString() !== currentId);
+    current.following = current.following.filter(id => id.toString() !== targetId);
 
     await target.save();
     await current.save();
@@ -182,7 +197,13 @@ exports.getAllUsers = async (req, res) => {
 // ✅ Update password by ID
 exports.updatePasswordById = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
+    const userId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    const user = await User.findById(userId);
     const { newPassword } = req.body;
     if (!user) return res.status(404).json({ message: "User not found" });
     if (!newPassword) return res.status(400).json({ message: "New password required" });
@@ -242,6 +263,10 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
   const { id, username } = req.params;
 
   try {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid ID format" });
+    }
+
     const user = await User.findOne({ _id: id, username });
     if (!user) {
       return res.status(404).json({ message: "User not found with given id and username" });
@@ -258,6 +283,10 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
 exports.deleteUserById = async (req, res) => {
   const { id } = req.params;
   try {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid ID format" });
+    }
+
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
