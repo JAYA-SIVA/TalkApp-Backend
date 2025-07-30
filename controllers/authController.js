@@ -2,23 +2,19 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// In-memory store for refresh tokens (for production, use DB or Redis)
+// In-memory store (in production use DB or Redis)
 let refreshTokens = [];
 
-// ✅ Generate Access & Refresh Tokens
+// ✅ Token Generator
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
-
-  // ✅ ADD THIS LINE BELOW
-  console.log("ACCESS_TOKEN_SECRET:", process.env.ACCESS_TOKEN_SECRET);
-  console.log("REFRESH_TOKEN_SECRET:", process.env.REFRESH_TOKEN_SECRET);
 
   const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
     expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
   });
 
   const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
-    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "7d",
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
   });
 
   return { accessToken, refreshToken };
@@ -30,7 +26,8 @@ exports.registerUser = async (req, res) => {
 
   try {
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ message: "Email already registered" });
+    if (existingUser)
+      return res.status(400).json({ message: "Email already registered" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -103,7 +100,7 @@ exports.refreshToken = (req, res) => {
   });
 };
 
-// 🔓 Logout - Invalidate refresh token (optional)
+// 🚪 Logout
 exports.logout = (req, res) => {
   const { token } = req.body;
   refreshTokens = refreshTokens.filter(t => t !== token);
