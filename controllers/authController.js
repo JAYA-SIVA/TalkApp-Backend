@@ -9,21 +9,16 @@ let refreshTokens = [];
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
 
-  const accessToken = jwt.sign(
-    payload,
-    process.env.ACCESS_TOKEN_SECRET || "MySuperSecretJWTKey123!",
-    {
-      expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
-    }
-  );
+  const accessSecret = process.env.ACCESS_TOKEN_SECRET?.trim() || "fallback_access_secret";
+  const refreshSecret = process.env.REFRESH_TOKEN_SECRET?.trim() || "fallback_refresh_secret";
 
-  const refreshToken = jwt.sign(
-    payload,
-    process.env.REFRESH_TOKEN_SECRET || "MyFallbackRefreshTokenSecret987!",
-    {
-      expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
-    }
-  );
+  const accessToken = jwt.sign(payload, accessSecret, {
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
+  });
+
+  const refreshToken = jwt.sign(payload, refreshSecret, {
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
+  });
 
   return { accessToken, refreshToken };
 };
@@ -32,6 +27,7 @@ const generateTokens = (user) => {
 exports.registerUser = async (req, res) => {
   const { username, email, password } = req.body;
 
+  // ✅ Validate input
   if (!username || !email || !password) {
     return res.status(400).json({ message: "All fields (username, email, password) are required." });
   }
@@ -70,6 +66,7 @@ exports.registerUser = async (req, res) => {
 exports.loginUser = async (req, res) => {
   const { email, password } = req.body;
 
+  // ✅ Validate input
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required." });
   }
@@ -109,23 +106,23 @@ exports.refreshToken = (req, res) => {
     return res.status(403).json({ message: "Invalid refresh token" });
   }
 
-  jwt.verify(
-    refreshToken,
-    process.env.REFRESH_TOKEN_SECRET || "MyFallbackRefreshTokenSecret987!",
-    (err, decoded) => {
-      if (err) {
-        return res.status(403).json({ message: "Token expired or invalid" });
-      }
+  const refreshSecret = process.env.REFRESH_TOKEN_SECRET?.trim() || "fallback_refresh_secret";
 
-      const newAccessToken = jwt.sign(
-        { id: decoded.id, username: decoded.username },
-        process.env.ACCESS_TOKEN_SECRET || "MySuperSecretJWTKey123!",
-        { expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m" }
-      );
-
-      res.status(200).json({ accessToken: newAccessToken });
+  jwt.verify(refreshToken, refreshSecret, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ message: "Token expired or invalid" });
     }
-  );
+
+    const accessSecret = process.env.ACCESS_TOKEN_SECRET?.trim() || "fallback_access_secret";
+
+    const newAccessToken = jwt.sign(
+      { id: decoded.id, username: decoded.username },
+      accessSecret,
+      { expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m" }
+    );
+
+    res.status(200).json({ accessToken: newAccessToken });
+  });
 };
 
 // 🚪 Logout
