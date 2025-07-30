@@ -2,7 +2,7 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// ⚠️ In-memory store for refresh tokens (in production, use Redis or DB)
+// ⚠️ In-memory store for refresh tokens (replace with DB/Redis in production)
 let refreshTokens = [];
 
 // ✅ Generate Access and Refresh Tokens
@@ -24,6 +24,11 @@ const generateTokens = (user) => {
 exports.registerUser = async (req, res) => {
   const { username, email, password } = req.body;
 
+  // ✅ Validate input
+  if (!username || !email || !password) {
+    return res.status(400).json({ message: "All fields (username, email, password) are required." });
+  }
+
   try {
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -39,7 +44,7 @@ exports.registerUser = async (req, res) => {
     });
 
     const tokens = generateTokens(newUser);
-    refreshTokens.push(tokens.refreshToken); // Save refresh token in memory
+    refreshTokens.push(tokens.refreshToken); // Store refresh token
 
     res.status(201).json({
       _id: newUser._id,
@@ -49,6 +54,7 @@ exports.registerUser = async (req, res) => {
       refreshToken: tokens.refreshToken,
     });
   } catch (err) {
+    console.error("Registration error:", err);
     res.status(500).json({ message: "Registration error: " + err.message });
   }
 };
@@ -56,6 +62,11 @@ exports.registerUser = async (req, res) => {
 // ✅ Login User
 exports.loginUser = async (req, res) => {
   const { email, password } = req.body;
+
+  // ✅ Validate input
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password are required." });
+  }
 
   try {
     const user = await User.findOne({ email });
@@ -65,7 +76,7 @@ exports.loginUser = async (req, res) => {
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
     const tokens = generateTokens(user);
-    refreshTokens.push(tokens.refreshToken); // Save new refresh token
+    refreshTokens.push(tokens.refreshToken); // Store new refresh token
 
     res.status(200).json({
       _id: user._id,
@@ -75,6 +86,7 @@ exports.loginUser = async (req, res) => {
       refreshToken: tokens.refreshToken,
     });
   } catch (err) {
+    console.error("Login error:", err);
     res.status(500).json({ message: "Login error: " + err.message });
   }
 };
