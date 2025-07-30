@@ -30,7 +30,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "*", // 🔐 In production, set your frontend domain
+    origin: "*", // 🔐 In production, restrict this
   },
 });
 
@@ -61,10 +61,10 @@ apiRouter.use("/talk", require("./routes/talk"));
 app.use("/api", apiRouter);
 
 // ──────────────────────────────
-// ✅ Health Check
+// ✅ Health Check Route
 // ──────────────────────────────
 app.get("/", (req, res) => {
-  res.send("🚀 Talk App API is running with Socket.IO");
+  res.status(200).send("🚀 Talk App API is running with Socket.IO ✅");
 });
 
 // ──────────────────────────────
@@ -73,24 +73,21 @@ app.get("/", (req, res) => {
 io.on("connection", (socket) => {
   console.log("🔌 New client connected:", socket.id);
 
-  // Join user to their personal room
+  // Join personal room
   socket.on("setup", (userData) => {
     socket.join(userData._id);
     console.log("👤 User joined room:", userData._id);
     socket.emit("connected");
   });
 
-  // Join specific chat room
   socket.on("join chat", (roomId) => {
     socket.join(roomId);
     console.log("📦 User joined chat:", roomId);
   });
 
-  // Typing status
   socket.on("typing", (room) => socket.to(room).emit("typing"));
   socket.on("stop typing", (room) => socket.to(room).emit("stop typing"));
 
-  // New message handling
   socket.on("new message", (message) => {
     const chat = message.chat;
     if (!chat || !chat.users) return;
@@ -101,7 +98,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // On disconnect
   socket.on("disconnect", () => {
     console.log("❌ User disconnected:", socket.id);
   });
@@ -112,5 +108,5 @@ io.on("connection", (socket) => {
 // ──────────────────────────────
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () =>
-  console.log(`✅ Server running on http://localhost:${PORT}`)
+  console.log(`✅ Server is live on PORT: ${PORT}`)
 );
