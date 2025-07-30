@@ -2,19 +2,19 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// In-memory store (in production use DB or Redis)
+// ⚠️ In-memory store for refresh tokens (Use Redis/DB in production)
 let refreshTokens = [];
 
-// ✅ Token Generator
+// ✅ Generate Access and Refresh Tokens
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
 
   const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
-    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m", // default 15 mins
   });
 
   const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
-    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d", // default 30 days
   });
 
   return { accessToken, refreshToken };
@@ -38,7 +38,7 @@ exports.registerUser = async (req, res) => {
     });
 
     const tokens = generateTokens(newUser);
-    refreshTokens.push(tokens.refreshToken);
+    refreshTokens.push(tokens.refreshToken); // Save refresh token
 
     res.status(201).json({
       _id: newUser._id,
@@ -48,7 +48,7 @@ exports.registerUser = async (req, res) => {
       refreshToken: tokens.refreshToken,
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: "Registration error: " + err.message });
   }
 };
 
@@ -64,7 +64,7 @@ exports.loginUser = async (req, res) => {
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
     const tokens = generateTokens(user);
-    refreshTokens.push(tokens.refreshToken);
+    refreshTokens.push(tokens.refreshToken); // Save new refresh token
 
     res.status(200).json({
       _id: user._id,
@@ -74,7 +74,7 @@ exports.loginUser = async (req, res) => {
       refreshToken: tokens.refreshToken,
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: "Login error: " + err.message });
   }
 };
 
@@ -100,9 +100,9 @@ exports.refreshToken = (req, res) => {
   });
 };
 
-// 🚪 Logout
+// 🚪 Logout (Invalidate refresh token)
 exports.logout = (req, res) => {
   const { token } = req.body;
-  refreshTokens = refreshTokens.filter(t => t !== token);
+  refreshTokens = refreshTokens.filter((t) => t !== token);
   res.status(200).json({ message: "Logged out successfully" });
 };
