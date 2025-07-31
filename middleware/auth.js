@@ -1,45 +1,41 @@
+// middleware/protect.js
+
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const User = require("../models/User");
 
 const protect = async (req, res, next) => {
-  let token;
-
   try {
-    // 🔐 Extract token from Authorization header
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith("Bearer")
-    ) {
-      token = req.headers.authorization.split(" ")[1];
+    const authHeader = req.headers.authorization;
 
-      // 🔓 Decode and verify token
-      const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-
-      // 👤 Find the user (excluding password)
-      const user = await User.findById(decoded.id).select("-password");
-
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-
-      // 🛑 If user is blocked, deny access
-      if (user.isBlocked) {
-        return res.status(403).json({ message: "Your account has been blocked" });
-      }
-
-      // ✅ Attach user to request object
-      req.user = user;
-      next();
-    } else {
-      return res
-        .status(401)
-        .json({ message: "Not authorized, token missing" });
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Unauthorized: No token provided" });
     }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET);
+
+    // Validate ObjectId format
+    if (!decoded.id || !mongoose.Types.ObjectId.isValid(decoded.id)) {
+      return res.status(400).json({ message: "Invalid user ID in token" });
+    }
+
+    const user = await User.findById(decoded.id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Optional: Check if user is blocked (if using admin controls)
+    if (user.isBlocked) {
+      return res.status(403).json({ message: "Access denied: User is blocked" });
+    }
+
+    req.user = user;
+    next();
   } catch (error) {
-    console.error("🔐 JWT Error:", error.message);
-    return res
-      .status(401)
-      .json({ message: "Not authorized, token invalid or expired" });
+    console.error("Auth Middleware Error:", error.message);
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
 };
 
