@@ -23,17 +23,16 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
-// ✅ Register User
+// ✅ Register User (with case-insensitive email check)
 exports.registerUser = async (req, res) => {
   const { username, email, password } = req.body;
 
-  // ✅ Validate input
   if (!username || !email || !password) {
     return res.status(400).json({ message: "All fields (username, email, password) are required." });
   }
 
   try {
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: new RegExp("^" + email + "$", "i") });
     if (existingUser) {
       return res.status(400).json({ message: "Email already registered" });
     }
@@ -47,7 +46,7 @@ exports.registerUser = async (req, res) => {
     });
 
     const tokens = generateTokens(newUser);
-    refreshTokens.push(tokens.refreshToken); // Store refresh token
+    refreshTokens.push(tokens.refreshToken);
 
     res.status(201).json({
       _id: newUser._id,
@@ -62,24 +61,23 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-// ✅ Login User
+// ✅ Login User (with case-insensitive email check)
 exports.loginUser = async (req, res) => {
   const { email, password } = req.body;
 
-  // ✅ Validate input
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required." });
   }
 
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: new RegExp("^" + email + "$", "i") });
     if (!user) return res.status(400).json({ message: "User not found" });
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
     const tokens = generateTokens(user);
-    refreshTokens.push(tokens.refreshToken); // Store new refresh token
+    refreshTokens.push(tokens.refreshToken);
 
     res.status(200).json({
       _id: user._id,
