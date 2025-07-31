@@ -9,7 +9,6 @@ exports.uploadReel = async (req, res) => {
       return res.status(400).json({ message: "Video file and caption are required" });
     }
 
-    // Upload video to Cloudinary
     const result = await cloudinary.uploader.upload(req.file.path, {
       resource_type: "video",
       folder: "reels",
@@ -17,7 +16,6 @@ exports.uploadReel = async (req, res) => {
 
     const userId = (req.user && req.user._id) || req.body.userid;
 
-    // Save to database
     const reel = await Reel.create({
       userId,
       videoUrl: result.secure_url,
@@ -34,7 +32,7 @@ exports.uploadReel = async (req, res) => {
   }
 };
 
-// ✅ Get all reels
+// ✅ Get all reels with commentsCount
 exports.getAllReels = async (req, res) => {
   try {
     const reels = await Reel.find()
@@ -43,7 +41,13 @@ exports.getAllReels = async (req, res) => {
       .populate("comments.user", "username profilePic")
       .populate("likes", "username profilePic");
 
-    res.status(200).json(reels);
+    // Add commentsCount to each reel
+    const reelsWithCommentCount = reels.map((reel) => ({
+      ...reel._doc,
+      commentsCount: reel.comments.length,
+    }));
+
+    res.status(200).json(reelsWithCommentCount);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -145,7 +149,6 @@ exports.deleteReel = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // ✅ Delete video from Cloudinary
     const publicId = reel.videoUrl.split("/").pop().split(".")[0];
     await cloudinary.uploader.destroy(`reels/${publicId}`, { resource_type: "video" });
 
