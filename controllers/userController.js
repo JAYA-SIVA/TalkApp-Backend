@@ -1,7 +1,6 @@
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
-const mongoose = require("mongoose");
 
 // ✅ Generate Access and Refresh Tokens
 const generateTokens = (user) => {
@@ -18,7 +17,7 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
-// ✅ Register
+// ✅ Register User
 exports.registerUser = async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -44,7 +43,7 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-// ✅ Login
+// ✅ Login User
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -67,7 +66,7 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// ✅ Get User by ID
+// ✅ Get User Profile by ID
 exports.getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
@@ -78,12 +77,10 @@ exports.getUserProfile = async (req, res) => {
   }
 };
 
-// ✅ Get User by Username (Case-insensitive)
+// ✅ Get User by Username
 exports.getUserByUsername = async (req, res) => {
   try {
-    const user = await User.findOne({
-      username: new RegExp(`^${req.params.username}$`, "i"),
-    }).select("-password");
+    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user);
   } catch (err) {
@@ -91,12 +88,10 @@ exports.getUserByUsername = async (req, res) => {
   }
 };
 
-// ✅ Get User by Email (Case-insensitive)
+// ✅ Get User by Email
 exports.getUserByEmail = async (req, res) => {
   try {
-    const user = await User.findOne({
-      email: new RegExp(`^${req.params.email}$`, "i"),
-    }).select("-password");
+    const user = await User.findOne({ email: new RegExp(`^${req.params.email}$`, "i") }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user);
   } catch (err) {
@@ -104,7 +99,7 @@ exports.getUserByEmail = async (req, res) => {
   }
 };
 
-// ✅ Update Profile (Prevent duplicate username/email)
+// ✅ Update User Profile
 exports.updateUserProfile = async (req, res) => {
   try {
     const { username, bio, profilePic, email } = req.body;
@@ -133,7 +128,7 @@ exports.updateUserProfile = async (req, res) => {
   }
 };
 
-// ✅ Follow
+// ✅ Follow User
 exports.followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -145,6 +140,7 @@ exports.followUser = async (req, res) => {
       User.findById(targetId),
       User.findById(currentId),
     ]);
+
     if (!target || !current) return res.status(404).json({ message: "User not found" });
 
     if (!target.followers.includes(currentId)) target.followers.push(currentId);
@@ -157,7 +153,7 @@ exports.followUser = async (req, res) => {
   }
 };
 
-// ✅ Unfollow
+// ✅ Unfollow User
 exports.unfollowUser = async (req, res) => {
   try {
     const targetId = req.params.id;
