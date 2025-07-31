@@ -4,11 +4,11 @@ const User = require("../models/User");
 // 📤 Upload a post
 exports.uploadPost = async (req, res) => {
   try {
-    const { caption } = req.body;
+    const { caption = "", type = "post" } = req.body;
     const file = req.file;
-    const userId = req.user.id;
+    const userId = req.user._id; // ✅ Corrected
 
-    if (!caption || !userId || !file) {
+    if (!file || !userId) {
       return res.status(400).json({ message: "caption, media, and userId are required" });
     }
 
@@ -21,6 +21,7 @@ exports.uploadPost = async (req, res) => {
 
     const newPost = new Post({
       userId,
+      type, // ✅ Save type: post, reel, tweet, etc.
       caption,
       images: mediaType === "image" ? [mediaUrl] : [],
       video: mediaType === "video" ? mediaUrl : "",
@@ -32,17 +33,17 @@ exports.uploadPost = async (req, res) => {
 
     res.status(201).json({ message: "✅ Post uploaded", post: populated });
   } catch (error) {
+    console.error("❌ Upload failed:", error.message);
     res.status(500).json({ message: "Upload failed", error: error.message });
   }
 };
 
-// 📥 Get all posts
+// 📥 Get all posts (for Home + Reels filtering from Android)
 exports.getAllPosts = async (req, res) => {
   try {
     const posts = await Post.find()
       .sort({ createdAt: -1 })
       .populate("userId", "username profilePic");
-
     res.status(200).json(posts);
   } catch (error) {
     res.status(500).json({ message: "Failed to fetch posts", error: error.message });
@@ -52,7 +53,8 @@ exports.getAllPosts = async (req, res) => {
 // 🆔 Get post by ID
 exports.getPostById = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id).populate("userId", "username profilePic");
+    const post = await Post.findById(req.params.id)
+      .populate("userId", "username profilePic");
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.status(200).json(post);
   } catch (error) {
@@ -72,7 +74,7 @@ exports.getPostsByUser = async (req, res) => {
   }
 };
 
-// 🔍 Get posts by username
+// 🔍 Get posts by Username
 exports.getPostsByUsername = async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });
@@ -87,14 +89,15 @@ exports.getPostsByUsername = async (req, res) => {
   }
 };
 
-// 👍 Like post
+// 👍 Like a post
 exports.likePost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    if (!post.likes.includes(req.user.id)) {
-      post.likes.push(req.user.id);
+    const userId = req.user._id;
+    if (!post.likes.includes(userId)) {
+      post.likes.push(userId);
       await post.save();
     }
 
@@ -104,13 +107,13 @@ exports.likePost = async (req, res) => {
   }
 };
 
-// 👎 Unlike post
+// 👎 Unlike a post
 exports.unlikePost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    post.likes = post.likes.filter(id => id.toString() !== req.user.id);
+    post.likes = post.likes.filter(id => id.toString() !== req.user._id.toString());
     await post.save();
 
     res.status(200).json({ message: "Post unliked", likes: post.likes });
@@ -127,7 +130,7 @@ exports.addComment = async (req, res) => {
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     post.comments.push({
-      userId: req.user.id,
+      userId: req.user._id,
       comment: text,
       createdAt: new Date(),
     });
@@ -139,10 +142,11 @@ exports.addComment = async (req, res) => {
   }
 };
 
-// 🗨️ Get comments
+// 🗨️ Get comments of a post
 exports.getComments = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id).populate("comments.userId", "username profilePic");
+    const post = await Post.findById(req.params.id)
+      .populate("comments.userId", "username profilePic");
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     res.status(200).json(post.comments);
@@ -157,7 +161,7 @@ exports.deletePost = async (req, res) => {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    if (post.userId.toString() !== req.user.id) {
+    if (post.userId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "Unauthorized: Cannot delete others' posts" });
     }
 
