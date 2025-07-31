@@ -6,7 +6,7 @@ exports.uploadPost = async (req, res) => {
   try {
     const { caption = "", type = "post" } = req.body;
     const file = req.file;
-    const userId = req.user?.id || req.user?._id; // ✅ Handle both formats
+    const userId = req.user?.id || req.user?._id;
 
     if (!file) {
       return res.status(400).json({ message: "❌ Media file is required" });
@@ -42,7 +42,7 @@ exports.uploadPost = async (req, res) => {
   }
 };
 
-// 📥 Get all posts (for Home + Reels filtering from Android)
+// 📥 Get all posts (for Home)
 exports.getAllPosts = async (req, res) => {
   try {
     const posts = await Post.find()
@@ -51,6 +51,24 @@ exports.getAllPosts = async (req, res) => {
     res.status(200).json(posts);
   } catch (error) {
     res.status(500).json({ message: "Failed to fetch posts", error: error.message });
+  }
+};
+
+// 📽️ Get all video posts + reels (for Reels Page)
+exports.getReels = async (req, res) => {
+  try {
+    const posts = await Post.find({
+      $or: [
+        { type: "reel" },
+        { video: { $exists: true, $ne: "" } }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .populate("userId", "username profilePic");
+
+    res.status(200).json(posts);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch reels", error: error.message });
   }
 };
 
