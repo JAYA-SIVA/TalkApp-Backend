@@ -3,9 +3,19 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
 
-// 🔐 JWT Generator
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: "30d" });
+// ✅ Generate Access and Refresh Tokens
+const generateTokens = (user) => {
+  const payload = { id: user._id, username: user.username };
+
+  const accessToken = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || "15m",
+  });
+
+  const refreshToken = jwt.sign(payload, process.env.REFRESH_TOKEN_SECRET, {
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || "30d",
+  });
+
+  return { accessToken, refreshToken };
 };
 
 // ✅ Register
@@ -21,11 +31,13 @@ exports.registerUser = async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const user = await User.create({ username, email, password: hash });
 
+    const tokens = generateTokens(user);
+
     res.status(201).json({
       _id: user._id,
       username: user.username,
       email: user.email,
-      token: generateToken(user._id),
+      ...tokens,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -42,11 +54,13 @@ exports.loginUser = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
+    const tokens = generateTokens(user);
+
     res.json({
       _id: user._id,
       username: user.username,
       email: user.email,
-      token: generateToken(user._id),
+      ...tokens,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -67,7 +81,9 @@ exports.getUserProfile = async (req, res) => {
 // ✅ Get User by Username (Case-insensitive)
 exports.getUserByUsername = async (req, res) => {
   try {
-    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") }).select("-password");
+    const user = await User.findOne({
+      username: new RegExp(`^${req.params.username}$`, "i"),
+    }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user);
   } catch (err) {
@@ -78,7 +94,9 @@ exports.getUserByUsername = async (req, res) => {
 // ✅ Get User by Email (Case-insensitive)
 exports.getUserByEmail = async (req, res) => {
   try {
-    const user = await User.findOne({ email: new RegExp(`^${req.params.email}$`, "i") }).select("-password");
+    const user = await User.findOne({
+      email: new RegExp(`^${req.params.email}$`, "i"),
+    }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user);
   } catch (err) {
@@ -93,7 +111,6 @@ exports.updateUserProfile = async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // check for duplicate email or username
     if (email && email !== user.email) {
       const emailExists = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
       if (emailExists) return res.status(400).json({ message: "Email already in use" });
@@ -152,8 +169,8 @@ exports.unfollowUser = async (req, res) => {
     ]);
     if (!target || !current) return res.status(404).json({ message: "User not found" });
 
-    target.followers = target.followers.filter(id => id.toString() !== currentId);
-    current.following = current.following.filter(id => id.toString() !== targetId);
+    target.followers = target.followers.filter((id) => id.toString() !== currentId);
+    current.following = current.following.filter((id) => id.toString() !== targetId);
 
     await Promise.all([target.save(), current.save()]);
     res.json({ message: "Unfollowed successfully" });
@@ -187,7 +204,7 @@ exports.updatePasswordById = async (req, res) => {
   }
 };
 
-// ✅ Delete by ID
+// ✅ Delete User by ID
 exports.deleteUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
