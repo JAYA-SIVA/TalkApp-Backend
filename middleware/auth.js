@@ -13,7 +13,7 @@ const protect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
 
       // 🔓 Decode and verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
       // 👤 Find the user (excluding password)
       const user = await User.findById(decoded.id).select("-password");
