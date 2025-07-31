@@ -1,5 +1,3 @@
-// routes/talk.js
-
 const express = require("express");
 const router = express.Router();
 
@@ -18,7 +16,8 @@ const {
   unlikePost,
   addComment,
   getComments,
-  deletePost
+  deletePost,
+  getReels, // ✅ NEW: Get reels/videos for Reels Page
 } = require("../controllers/talk");
 
 // ─────────────────────────────
@@ -27,16 +26,21 @@ const {
 router.post("/upload", auth, upload.single("media"), uploadPost);
 
 // ─────────────────────────────
-// 📥 Get all posts (Home Feed & Reels Page)
+// 📥 Get all posts (Home Feed)
 // ─────────────────────────────
 router.get("/all", getAllPosts);         // Open feed
-router.get("/", auth, getAllPosts);      // Authenticated home feed
+router.get("/", auth, getAllPosts);      // Authenticated feed
+
+// ─────────────────────────────
+// 📽️ Get reels (videos + reel type posts) — For Reels Page
+// ─────────────────────────────
+router.get("/reels", getReels); // ✅ This is the NEW route
 
 // ─────────────────────────────
 // 🔍 Fetch posts
 // ─────────────────────────────
-router.get("/post/:id", getPostById);                  // By Post ID
-router.get("/user/:id", getPostsByUser);               // By User ID
+router.get("/post/:id", getPostById);                     // By Post ID
+router.get("/user/:id", getPostsByUser);                  // By User ID
 router.get("/by-username/:username", getPostsByUsername); // By Username
 
 // ─────────────────────────────
