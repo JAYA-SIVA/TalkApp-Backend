@@ -3,16 +3,16 @@
 const express = require("express");
 const router = express.Router();
 
-// ✅ Middleware for Cloudinary Upload & JWT Auth
-const upload = require("../middleware/multer");
-const auth = require("../middleware/auth");
+// ✅ Middleware
+const upload = require("../middleware/multer"); // Cloudinary + Multer
+const auth = require("../middleware/auth");     // JWT Token protection
 
-// ✅ Controller functions
+// ✅ Controllers
 const {
   uploadPost,
   getAllPosts,
-  getPostsByUser,
   getPostById,
+  getPostsByUser,
   getPostsByUsername,
   likePost,
   unlikePost,
@@ -21,38 +21,39 @@ const {
   deletePost
 } = require("../controllers/talk");
 
-// 📤 Upload a new post with media (image/video)
+// ─────────────────────────────
+// 📤 Upload a post (image or video)
+// ─────────────────────────────
 router.post("/upload", auth, upload.single("media"), uploadPost);
 
-// 📥 Get all posts (Home feed)
-router.get("/all", getAllPosts);
+// ─────────────────────────────
+// 📥 Get all posts (Home Feed & Reels Page)
+// ─────────────────────────────
+router.get("/all", getAllPosts);         // Open feed
+router.get("/", auth, getAllPosts);      // Authenticated home feed
 
-// 👤 Get all posts by user ID
-router.get("/user/:id", getPostsByUser);
+// ─────────────────────────────
+// 🔍 Fetch posts
+// ─────────────────────────────
+router.get("/post/:id", getPostById);                  // By Post ID
+router.get("/user/:id", getPostsByUser);               // By User ID
+router.get("/by-username/:username", getPostsByUsername); // By Username
 
-// 🆔 Get a post by Post ID
-router.get("/post/:id", getPostById);
-
-// 🔍 Get posts by Username
-router.get("/by-username/:username", getPostsByUsername);
-
-// 👍 Like a post
+// ─────────────────────────────
+// ❤️ Likes
+// ─────────────────────────────
 router.put("/like/:id", auth, likePost);
-
-// 👎 Unlike a post
 router.put("/unlike/:id", auth, unlikePost);
 
-// 💬 Add comment to a post
+// ─────────────────────────────
+// 💬 Comments
+// ─────────────────────────────
 router.post("/comment/:id", auth, addComment);
-
-// 🗨️ Get all comments of a post
 router.get("/comments/:id", getComments);
 
-// ❌ Delete a post by ID
+// ─────────────────────────────
+// ❌ Delete
+// ─────────────────────────────
 router.delete("/delete/:id", auth, deletePost);
-
-// 🏠 Authenticated Home Feed (used in Android)
-router.get("/", auth, getAllPosts);
-
 
 module.exports = router;
