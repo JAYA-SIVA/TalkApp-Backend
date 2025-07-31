@@ -99,6 +99,24 @@ exports.getUserByEmail = async (req, res) => {
   }
 };
 
+// ✅ Get User by Username or Email (identifier)
+exports.getUserByUsernameOrEmail = async (req, res) => {
+  try {
+    const { identifier } = req.params;
+    const user = await User.findOne({
+      $or: [
+        { username: new RegExp(`^${identifier}$`, "i") },
+        { email: new RegExp(`^${identifier}$`, "i") },
+      ],
+    }).select("-password");
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ✅ Update User Profile
 exports.updateUserProfile = async (req, res) => {
   try {
@@ -200,10 +218,80 @@ exports.updatePasswordById = async (req, res) => {
   }
 };
 
+// ✅ Update Password by Username
+exports.updatePasswordByUsername = async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ message: "Password updated" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ Update Password by Identifier
+exports.updatePasswordByUsernameOrEmail = async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    const identifier = req.params.identifier;
+
+    const user = await User.findOne({
+      $or: [
+        { username: new RegExp(`^${identifier}$`, "i") },
+        { email: new RegExp(`^${identifier}$`, "i") },
+      ],
+    });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ message: "Password updated" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ✅ Delete User by ID
 exports.deleteUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    await user.deleteOne();
+    res.json({ message: "User deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ Delete User by Username
+exports.deleteUserByUsername = async (req, res) => {
+  try {
+    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    await user.deleteOne();
+    res.json({ message: "User deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ Delete User by ID & Username (for extra security)
+exports.deleteUserByIdAndUsername = async (req, res) => {
+  try {
+    const { id, username } = req.params;
+
+    const user = await User.findOne({
+      _id: id,
+      username: new RegExp(`^${username}$`, "i"),
+    });
+
     if (!user) return res.status(404).json({ message: "User not found" });
 
     await user.deleteOne();
