@@ -6,10 +6,14 @@ exports.uploadPost = async (req, res) => {
   try {
     const { caption = "", type = "post" } = req.body;
     const file = req.file;
-    const userId = req.user._id; // ✅ Corrected
+    const userId = req.user?.id || req.user?._id; // ✅ Handle both formats
 
-    if (!file || !userId) {
-      return res.status(400).json({ message: "caption, media, and userId are required" });
+    if (!file) {
+      return res.status(400).json({ message: "❌ Media file is required" });
+    }
+
+    if (!userId) {
+      return res.status(401).json({ message: "❌ Unauthorized: No user ID found" });
     }
 
     const mediaUrl = file.path;
@@ -21,7 +25,7 @@ exports.uploadPost = async (req, res) => {
 
     const newPost = new Post({
       userId,
-      type, // ✅ Save type: post, reel, tweet, etc.
+      type,
       caption,
       images: mediaType === "image" ? [mediaUrl] : [],
       video: mediaType === "video" ? mediaUrl : "",
@@ -33,7 +37,7 @@ exports.uploadPost = async (req, res) => {
 
     res.status(201).json({ message: "✅ Post uploaded", post: populated });
   } catch (error) {
-    console.error("❌ Upload failed:", error.message);
+    console.error("❌ Upload failed:", error);
     res.status(500).json({ message: "Upload failed", error: error.message });
   }
 };
