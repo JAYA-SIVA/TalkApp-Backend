@@ -19,7 +19,7 @@ exports.uploadReel = async (req, res) => {
 
     // Save to database
     const reel = await Reel.create({
-      userId: userId,
+      userId,
       videoUrl: result.secure_url,
       caption: req.body.caption,
     });
@@ -40,7 +40,9 @@ exports.getAllReels = async (req, res) => {
     const reels = await Reel.find()
       .sort({ createdAt: -1 })
       .populate("userId", "username profilePic")
-      .populate("comments.user", "username profilePic");
+      .populate("comments.user", "username profilePic")
+      .populate("likes", "username profilePic");
+
     res.status(200).json(reels);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -63,7 +65,8 @@ exports.likeReel = async (req, res) => {
       await reel.save();
     }
 
-    res.status(200).json({ message: "Reel liked", likes: reel.likes });
+    const updated = await Reel.findById(id).populate("likes", "username profilePic");
+    res.status(200).json({ message: "Reel liked", likes: updated.likes });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -85,11 +88,14 @@ exports.dislikeReel = async (req, res) => {
     );
 
     await reel.save();
-    res.status(200).json({ message: "Reel unliked", likes: reel.likes });
+
+    const updated = await Reel.findById(id).populate("likes", "username profilePic");
+    res.status(200).json({ message: "Reel unliked", likes: updated.likes });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
+
 // ✅ Comment on a reel
 exports.commentReel = async (req, res) => {
   try {
@@ -100,7 +106,7 @@ exports.commentReel = async (req, res) => {
       return res.status(400).json({ message: "Invalid Reel ID" });
     }
 
-    if (!text) {
+    if (!text || text.trim().length === 0) {
       return res.status(400).json({ message: "Comment text is required" });
     }
 
@@ -109,20 +115,21 @@ exports.commentReel = async (req, res) => {
 
     const newComment = {
       user: req.user._id,
-      text,
+      text: text.trim(),
       createdAt: new Date(),
     };
 
     reel.comments.push(newComment);
     await reel.save();
 
-    res.status(201).json({ message: "Comment added", comments: reel.comments });
+    const updated = await Reel.findById(id).populate("comments.user", "username profilePic");
+    res.status(201).json({ message: "Comment added", comments: updated.comments });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-// ✅ Delete a reel
+// ✅ Delete a reel (with Cloudinary cleanup)
 exports.deleteReel = async (req, res) => {
   try {
     const { id } = req.params;
@@ -137,6 +144,10 @@ exports.deleteReel = async (req, res) => {
     if (reel.userId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
     }
+
+    // ✅ Delete video from Cloudinary
+    const publicId = reel.videoUrl.split("/").pop().split(".")[0];
+    await cloudinary.uploader.destroy(`reels/${publicId}`, { resource_type: "video" });
 
     await Reel.findByIdAndDelete(id);
     res.status(200).json({ message: "Reel deleted successfully" });
