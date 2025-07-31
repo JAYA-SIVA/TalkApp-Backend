@@ -1,6 +1,7 @@
+const cloudinary = require("../config/cloudinary");
 const Story = require("../models/Story");
 
-// ✅ Upload a new story
+// ✅ Upload a new story (image or video)
 const uploadStory = async (req, res) => {
   try {
     const file = req.file;
@@ -12,9 +13,14 @@ const uploadStory = async (req, res) => {
 
     const fileType = file.mimetype.startsWith("video") ? "video" : "image";
 
+    const result = await cloudinary.uploader.upload(file.path, {
+      resource_type: fileType === "video" ? "video" : "image",
+      folder: "stories",
+    });
+
     const story = await Story.create({
       userId: req.user._id,
-      mediaUrl: file.path, // Cloudinary URL from multer
+      mediaUrl: result.secure_url,
       caption,
       type: fileType,
     });
@@ -29,7 +35,7 @@ const uploadStory = async (req, res) => {
   }
 };
 
-// ✅ Get all stories
+// ✅ Get all stories (non-expired assumed via TTL)
 const getAllStories = async (req, res) => {
   try {
     const stories = await Story.find()
@@ -43,7 +49,7 @@ const getAllStories = async (req, res) => {
   }
 };
 
-// ✅ Mark a story as viewed by user
+// ✅ Mark a story as viewed
 const viewStory = async (req, res) => {
   try {
     const story = await Story.findById(req.params.id);
@@ -63,7 +69,7 @@ const viewStory = async (req, res) => {
   }
 };
 
-// ✅ Delete a story
+// ✅ Delete a story (with Cloudinary cleanup)
 const deleteStory = async (req, res) => {
   try {
     const story = await Story.findById(req.params.id);
@@ -74,6 +80,12 @@ const deleteStory = async (req, res) => {
     if (story.userId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "Unauthorized to delete" });
     }
+
+    // ✅ Cloudinary delete
+    const publicId = story.mediaUrl.split("/").pop().split(".")[0];
+    await cloudinary.uploader.destroy(`stories/${publicId}`, {
+      resource_type: story.type === "video" ? "video" : "image",
+    });
 
     await story.deleteOne();
     res.json({ message: "Story deleted successfully" });
