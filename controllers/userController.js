@@ -99,7 +99,7 @@ exports.getUserByEmail = async (req, res) => {
   }
 };
 
-// ✅ Get User by Username or Email (identifier)
+// ✅ Get User by Username or Email
 exports.getUserByUsernameOrEmail = async (req, res) => {
   try {
     const { identifier } = req.params;
@@ -117,7 +117,7 @@ exports.getUserByUsernameOrEmail = async (req, res) => {
   }
 };
 
-// ✅ Update User Profile
+// ✅ Update User by ID
 exports.updateUserProfile = async (req, res) => {
   try {
     const { username, bio, profilePic, email } = req.body;
@@ -146,7 +146,7 @@ exports.updateUserProfile = async (req, res) => {
   }
 };
 
-// ✅ Follow User
+// ✅ Follow & Unfollow
 exports.followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -171,7 +171,6 @@ exports.followUser = async (req, res) => {
   }
 };
 
-// ✅ Unfollow User
 exports.unfollowUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -203,7 +202,7 @@ exports.getAllUsers = async (req, res) => {
   }
 };
 
-// ✅ Update Password by ID
+// ✅ Password Updates
 exports.updatePasswordById = async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -218,7 +217,6 @@ exports.updatePasswordById = async (req, res) => {
   }
 };
 
-// ✅ Update Password by Username
 exports.updatePasswordByUsername = async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -233,7 +231,6 @@ exports.updatePasswordByUsername = async (req, res) => {
   }
 };
 
-// ✅ Update Password by Identifier
 exports.updatePasswordByUsernameOrEmail = async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -256,7 +253,7 @@ exports.updatePasswordByUsernameOrEmail = async (req, res) => {
   }
 };
 
-// ✅ Delete User by ID
+// ✅ Delete User
 exports.deleteUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -269,7 +266,6 @@ exports.deleteUserById = async (req, res) => {
   }
 };
 
-// ✅ Delete User by Username
 exports.deleteUserByUsername = async (req, res) => {
   try {
     const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
@@ -282,7 +278,6 @@ exports.deleteUserByUsername = async (req, res) => {
   }
 };
 
-// ✅ Delete User by ID & Username (for extra security)
 exports.deleteUserByIdAndUsername = async (req, res) => {
   try {
     const { id, username } = req.params;
@@ -296,6 +291,39 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
 
     await user.deleteOne();
     res.json({ message: "User deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+
+
+// ✅ 🔥 NEW: Update User by Username (for Postman & Android)
+exports.updateUserByUsername = async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { bio, profilePic, email } = req.body;
+
+    const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (req.body.username && req.body.username !== username) {
+      const existing = await User.findOne({ username: new RegExp(`^${req.body.username}$`, "i") });
+      if (existing) return res.status(400).json({ message: "Username already in use" });
+      user.username = req.body.username;
+    }
+
+    if (email && email !== user.email) {
+      const existingEmail = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
+      if (existingEmail) return res.status(400).json({ message: "Email already in use" });
+      user.email = email;
+    }
+
+    if (bio) user.bio = bio;
+    if (profilePic) user.profilePic = profilePic;
+
+    const updated = await user.save();
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
