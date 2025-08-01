@@ -18,7 +18,8 @@ const {
   updatePasswordByUsernameOrEmail,
   deleteUserByIdAndUsername,
   deleteUserById,
-  deleteUserByUsername
+  deleteUserByUsername,
+  updateUserByUsername // ✅ New controller added
 } = require("../controllers/userController");
 
 // ✅ Register & Login
@@ -50,5 +51,8 @@ router.put("/update-password-by-identifier/:identifier", protect, updatePassword
 router.delete("/delete/:id/:username", deleteUserByIdAndUsername);     // By ID + Username
 router.delete("/delete-by-id/:id", deleteUserById);                    // By ID only
 router.delete("/delete-by-username/:username", deleteUserByUsername); // By Username only
+
+// ✅ 🔥 Update User by Username (NEW)
+router.put("/update/:username", protect, updateUserByUsername);
 
 module.exports = router;
