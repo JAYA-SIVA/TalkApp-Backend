@@ -15,7 +15,7 @@ const postSchema = new mongoose.Schema({
   },
   text: {
     type: String,
-    default: "", // for tweet-style text
+    default: "", // For tweets or captions
   },
   images: [
     {
