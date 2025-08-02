@@ -296,7 +296,7 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
   }
 };
 
-// ✅ 🔥 FINAL: Update User by Username (Safe & Clean)
+// ✅ ✅ ✅ FINAL: Update User by Username (Fixed 400 error if same username sent)
 exports.updateUserByUsername = async (req, res) => {
   try {
     const { username } = req.params;
@@ -305,16 +305,20 @@ exports.updateUserByUsername = async (req, res) => {
     const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (req.body.username && req.body.username.toLowerCase() !== username.toLowerCase()) {
-      const existing = await User.findOne({ username: new RegExp(`^${req.body.username}$`, "i") });
+    if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
+      const existing = await User.findOne({
+        username: new RegExp(`^${req.body.username}$`, "i"),
+      });
       if (existing && existing._id.toString() !== user._id.toString()) {
         return res.status(400).json({ message: "Username already in use" });
       }
       user.username = req.body.username;
     }
 
-    if (email && email !== user.email) {
-      const existingEmail = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
+    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+      const existingEmail = await User.findOne({
+        email: new RegExp(`^${email}$`, "i"),
+      });
       if (existingEmail && existingEmail._id.toString() !== user._id.toString()) {
         return res.status(400).json({ message: "Email already in use" });
       }
