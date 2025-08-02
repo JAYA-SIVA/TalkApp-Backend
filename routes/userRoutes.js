@@ -19,7 +19,7 @@ const {
   deleteUserByIdAndUsername,
   deleteUserById,
   deleteUserByUsername,
-  updateUserByUsername
+  updateUserByUsername,
 } = require("../controllers/userController");
 
 // ✅ Register & Login
@@ -29,30 +29,30 @@ router.post("/login", loginUser);
 // ✅ Get All Users
 router.get("/", protect, getAllUsers);
 
-// ✅ Get User by Username / Email / Both (MUST BE ABOVE /:id!)
-router.get("/by-username/:username", protect, getUserByUsername); // ✅ CHANGED!
-router.get("/email/:email", protect, getUserByEmail);
-router.get("/identifier/:identifier", protect, getUserByUsernameOrEmail);
+// ✅ User lookup (username/email/identifier)
+router.get("/by-username/:username", protect, getUserByUsername); // By Username
+router.get("/email/:email", protect, getUserByEmail);             // By Email
+router.get("/identifier/:identifier", protect, getUserByUsernameOrEmail); // By either
 
-// ✅ Profile Actions (by ID)
-router.get("/:id", protect, getUserProfile);
-router.put("/:id", protect, updateUserProfile);
+// ✅ Profile - ID-based
+router.get("/:id", protect, getUserProfile);           // Get user by ID
+router.put("/:id", protect, updateUserProfile);        // Update by ID (edit page if ID used)
 
-// ✅ Follow & Unfollow
+// ✅ 🔥 Update Profile by Username (Edit Profile button use this)
+router.put("/update/:username", protect, updateUserByUsername); // ✅ This is main update route
+
+// ✅ Follow/Unfollow
 router.put("/follow/:id", protect, followUser);
 router.put("/unfollow/:id", protect, unfollowUser);
 
-// ✅ Update Password Routes
+// ✅ Password Management
 router.put("/update-password/:id", protect, updatePasswordById);
 router.put("/update-password-by-username/:username", protect, updatePasswordByUsername);
 router.put("/update-password-by-identifier/:identifier", protect, updatePasswordByUsernameOrEmail);
 
 // ✅ Delete User Routes
-router.delete("/delete/:id/:username", deleteUserByIdAndUsername);     // By ID + Username
-router.delete("/delete-by-id/:id", deleteUserById);                    // By ID only
-router.delete("/delete-by-username/:username", deleteUserByUsername); // By Username only
-
-// ✅ 🔥 Update User by Username
-router.put("/update/:username", protect, updateUserByUsername);
+router.delete("/delete/:id/:username", deleteUserByIdAndUsername);     // ID + Username
+router.delete("/delete-by-id/:id", deleteUserById);                    // ID only
+router.delete("/delete-by-username/:username", deleteUserByUsername); // Username only
 
 module.exports = router;
