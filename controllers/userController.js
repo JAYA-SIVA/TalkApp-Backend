@@ -1,5 +1,5 @@
 const User = require("../models/User");
-const Post = require("../models/posts"); // ✅ Required for post count
+const Post = require("../models/Post"); ✅
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
