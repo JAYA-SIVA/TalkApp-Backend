@@ -30,11 +30,11 @@ router.post("/login", loginUser);
 router.get("/", protect, getAllUsers);
 
 // ✅ Get User by Username / Email / Both (MUST BE ABOVE /:id!)
-router.get("/username/:username", protect, getUserByUsername);
+router.get("/by-username/:username", protect, getUserByUsername); // ✅ CHANGED!
 router.get("/email/:email", protect, getUserByEmail);
 router.get("/identifier/:identifier", protect, getUserByUsernameOrEmail);
 
-// ✅ Profile Actions
+// ✅ Profile Actions (by ID)
 router.get("/:id", protect, getUserProfile);
 router.put("/:id", protect, updateUserProfile);
 
@@ -54,8 +54,5 @@ router.delete("/delete-by-username/:username", deleteUserByUsername); // By User
 
 // ✅ 🔥 Update User by Username
 router.put("/update/:username", protect, updateUserByUsername);
-
-// ✅ 🆕 Get user by username (like /user/sudhakar456)
-router.get("/:username", protect, getUserByUsername);
 
 module.exports = router;
