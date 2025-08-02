@@ -19,7 +19,7 @@ const {
   deleteUserByIdAndUsername,
   deleteUserById,
   deleteUserByUsername,
-  updateUserByUsername // ✅ New controller added
+  updateUserByUsername
 } = require("../controllers/userController");
 
 // ✅ Register & Login
@@ -52,7 +52,10 @@ router.delete("/delete/:id/:username", deleteUserByIdAndUsername);     // By ID 
 router.delete("/delete-by-id/:id", deleteUserById);                    // By ID only
 router.delete("/delete-by-username/:username", deleteUserByUsername); // By Username only
 
-// ✅ 🔥 Update User by Username (NEW)
+// ✅ 🔥 Update User by Username
 router.put("/update/:username", protect, updateUserByUsername);
+
+// ✅ 🆕 Get user by username (like /user/sudhakar456)
+router.get("/:username", protect, getUserByUsername);
 
 module.exports = router;
