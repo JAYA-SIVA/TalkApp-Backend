@@ -1,4 +1,5 @@
 const User = require("../models/User");
+const Post = require("../models/posts"); // ✅ Required for post count
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
@@ -17,7 +18,7 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
-// ✅ Register User
+// ✅ Register
 exports.registerUser = async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -43,7 +44,7 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-// ✅ Login User
+// ✅ Login
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -66,7 +67,7 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// ✅ Get User Profile by ID
+// ✅ Get Profile by ID
 exports.getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
@@ -117,7 +118,30 @@ exports.getUserByUsernameOrEmail = async (req, res) => {
   }
 };
 
-// ✅ Update User by ID
+// ✅ Get User Stats by Username (NEW ✅)
+exports.getUserStatsByUsername = async (req, res) => {
+  try {
+    const username = req.params.username;
+
+    const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") }).select("username bio profilePic followers following");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const postsCount = await Post.countDocuments({ user: user._id });
+
+    res.json({
+      username: user.username,
+      bio: user.bio,
+      profilePic: user.profilePic,
+      followersCount: user.followers.length,
+      followingCount: user.following.length,
+      postsCount,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ Update Profile by ID
 exports.updateUserProfile = async (req, res) => {
   try {
     const { username, bio, profilePic, email } = req.body;
@@ -146,7 +170,53 @@ exports.updateUserProfile = async (req, res) => {
   }
 };
 
-// ✅ Follow & Unfollow
+// ✅ Update by Username (no duplicate check error)
+exports.updateUserByUsername = async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { bio, profilePic, email } = req.body;
+
+    const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
+      const existing = await User.findOne({ username: new RegExp(`^${req.body.username}$`, "i") });
+      if (existing && existing._id.toString() !== user._id.toString()) {
+        return res.status(400).json({ message: "Username already in use" });
+      }
+      user.username = req.body.username;
+    }
+
+    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+      const existingEmail = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
+      if (existingEmail && existingEmail._id.toString() !== user._id.toString()) {
+        return res.status(400).json({ message: "Email already in use" });
+      }
+      user.email = email;
+    }
+
+    if (bio) user.bio = bio;
+    if (profilePic) user.profilePic = profilePic;
+
+    const updated = await user.save();
+
+    res.json({
+      message: "Profile updated successfully",
+      user: {
+        _id: updated._id,
+        username: updated.username,
+        email: updated.email,
+        bio: updated.bio,
+        profilePic: updated.profilePic,
+      },
+    });
+  } catch (err) {
+    console.error("UpdateUser Error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+};
+
+// ✅ Follow / Unfollow
 exports.followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -293,55 +363,5 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
     res.json({ message: "User deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-};
-
-// ✅ ✅ ✅ FINAL: Update User by Username (Fixed 400 error if same username sent)
-exports.updateUserByUsername = async (req, res) => {
-  try {
-    const { username } = req.params;
-    const { bio, profilePic, email } = req.body;
-
-    const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
-      const existing = await User.findOne({
-        username: new RegExp(`^${req.body.username}$`, "i"),
-      });
-      if (existing && existing._id.toString() !== user._id.toString()) {
-        return res.status(400).json({ message: "Username already in use" });
-      }
-      user.username = req.body.username;
-    }
-
-    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
-      const existingEmail = await User.findOne({
-        email: new RegExp(`^${email}$`, "i"),
-      });
-      if (existingEmail && existingEmail._id.toString() !== user._id.toString()) {
-        return res.status(400).json({ message: "Email already in use" });
-      }
-      user.email = email;
-    }
-
-    if (bio) user.bio = bio;
-    if (profilePic) user.profilePic = profilePic;
-
-    const updated = await user.save();
-
-    res.json({
-      message: "Profile updated successfully",
-      user: {
-        _id: updated._id,
-        username: updated.username,
-        email: updated.email,
-        bio: updated.bio,
-        profilePic: updated.profilePic,
-      },
-    });
-  } catch (err) {
-    console.error("UpdateUser Error:", err);
-    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
