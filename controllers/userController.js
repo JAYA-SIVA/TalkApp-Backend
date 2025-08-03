@@ -1,5 +1,5 @@
 const User = require("../models/User");
-const Post = require("../models/Post"); 
+const Post = require("../models/Post");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
@@ -118,7 +118,7 @@ exports.getUserByUsernameOrEmail = async (req, res) => {
   }
 };
 
-// ✅ Get User Stats by Username (NEW ✅)
+// ✅ Get User Stats by Username
 exports.getUserStatsByUsername = async (req, res) => {
   try {
     const username = req.params.username;
@@ -141,48 +141,19 @@ exports.getUserStatsByUsername = async (req, res) => {
   }
 };
 
-// ✅ Update Profile by ID
-exports.updateUserProfile = async (req, res) => {
-  try {
-    const { username, bio, profilePic, email } = req.body;
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    if (email && email !== user.email) {
-      const emailExists = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
-      if (emailExists) return res.status(400).json({ message: "Email already in use" });
-      user.email = email;
-    }
-
-    if (username && username !== user.username) {
-      const usernameExists = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
-      if (usernameExists) return res.status(400).json({ message: "Username already in use" });
-      user.username = username;
-    }
-
-    user.bio = bio || user.bio;
-    user.profilePic = profilePic || user.profilePic;
-
-    const updated = await user.save();
-    res.json(updated);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-// ✅ Update by Username (no duplicate check error)
+// ✅ Update by Username (Edit Profile Android)
 exports.updateUserByUsername = async (req, res) => {
   try {
     const { username } = req.params;
     const { bio, profilePic, email } = req.body;
 
     const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
     if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
       const existing = await User.findOne({ username: new RegExp(`^${req.body.username}$`, "i") });
       if (existing && existing._id.toString() !== user._id.toString()) {
-        return res.status(400).json({ message: "Username already in use" });
+        return res.status(400).json({ success: false, message: "Username already in use" });
       }
       user.username = req.body.username;
     }
@@ -190,7 +161,7 @@ exports.updateUserByUsername = async (req, res) => {
     if (email && email.toLowerCase() !== user.email.toLowerCase()) {
       const existingEmail = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
       if (existingEmail && existingEmail._id.toString() !== user._id.toString()) {
-        return res.status(400).json({ message: "Email already in use" });
+        return res.status(400).json({ success: false, message: "Email already in use" });
       }
       user.email = email;
     }
@@ -200,7 +171,8 @@ exports.updateUserByUsername = async (req, res) => {
 
     const updated = await user.save();
 
-    res.json({
+    res.status(200).json({
+      success: true,
       message: "Profile updated successfully",
       user: {
         _id: updated._id,
@@ -212,11 +184,11 @@ exports.updateUserByUsername = async (req, res) => {
     });
   } catch (err) {
     console.error("UpdateUser Error:", err);
-    res.status(500).json({ message: "Server error", error: err.message });
+    res.status(500).json({ success: false, message: "Server error", error: err.message });
   }
 };
 
-// ✅ Follow / Unfollow
+// ✅ Follow
 exports.followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -241,6 +213,7 @@ exports.followUser = async (req, res) => {
   }
 };
 
+// ✅ Unfollow
 exports.unfollowUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -272,7 +245,7 @@ exports.getAllUsers = async (req, res) => {
   }
 };
 
-// ✅ Password Updates
+// ✅ Password updates
 exports.updatePasswordById = async (req, res) => {
   try {
     const { newPassword } = req.body;
