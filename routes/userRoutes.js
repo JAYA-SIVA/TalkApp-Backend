@@ -20,6 +20,7 @@ const {
   deleteUserById,
   deleteUserByUsername,
   updateUserByUsername,
+  searchUsersByUsername, // ✅ NEW: Search controller added
 } = require("../controllers/userController");
 
 // ✅ Register & Login
@@ -28,6 +29,9 @@ router.post("/login", loginUser);
 
 // ✅ Get All Users
 router.get("/", protect, getAllUsers);
+
+// ✅ 🔍 Search Users by Username (query param)
+router.get("/search", protect, searchUsersByUsername); // ✅ NEW: Search route
 
 // ✅ User lookup (username/email/identifier)
 router.get("/by-username/:username", protect, getUserByUsername); // By Username
