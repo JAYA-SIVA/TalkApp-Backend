@@ -118,42 +118,19 @@ exports.getUserByUsernameOrEmail = async (req, res) => {
   }
 };
 
-// ✅ Get User Stats by Username
-exports.getUserStatsByUsername = async (req, res) => {
-  try {
-    const username = req.params.username;
-
-    const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") }).select("username bio profilePic followers following");
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const postsCount = await Post.countDocuments({ user: user._id });
-
-    res.json({
-      username: user.username,
-      bio: user.bio,
-      profilePic: user.profilePic,
-      followersCount: user.followers.length,
-      followingCount: user.following.length,
-      postsCount,
-    });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-// ✅ Update by Username (Edit Profile Android)
+// ✅ Update Profile by Username
 exports.updateUserByUsername = async (req, res) => {
   try {
     const { username } = req.params;
     const { bio, profilePic, email } = req.body;
 
     const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
       const existing = await User.findOne({ username: new RegExp(`^${req.body.username}$`, "i") });
       if (existing && existing._id.toString() !== user._id.toString()) {
-        return res.status(400).json({ success: false, message: "Username already in use" });
+        return res.status(400).json({ message: "Username already taken" });
       }
       user.username = req.body.username;
     }
@@ -161,7 +138,7 @@ exports.updateUserByUsername = async (req, res) => {
     if (email && email.toLowerCase() !== user.email.toLowerCase()) {
       const existingEmail = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
       if (existingEmail && existingEmail._id.toString() !== user._id.toString()) {
-        return res.status(400).json({ success: false, message: "Email already in use" });
+        return res.status(400).json({ message: "Email already in use" });
       }
       user.email = email;
     }
@@ -171,7 +148,7 @@ exports.updateUserByUsername = async (req, res) => {
 
     const updated = await user.save();
 
-    res.status(200).json({
+    res.json({
       success: true,
       message: "Profile updated successfully",
       user: {
@@ -183,18 +160,16 @@ exports.updateUserByUsername = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("UpdateUser Error:", err);
-    res.status(500).json({ success: false, message: "Server error", error: err.message });
+    res.status(500).json({ message: err.message });
   }
 };
 
-// ✅ Follow
+// ✅ Follow User
 exports.followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
     const currentId = req.user.id;
-
-    if (targetId === currentId) return res.status(400).json({ message: "Cannot follow self" });
+    if (targetId === currentId) return res.status(400).json({ message: "Cannot follow yourself" });
 
     const [target, current] = await Promise.all([
       User.findById(targetId),
@@ -213,7 +188,7 @@ exports.followUser = async (req, res) => {
   }
 };
 
-// ✅ Unfollow
+// ✅ Unfollow User
 exports.unfollowUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -245,7 +220,7 @@ exports.getAllUsers = async (req, res) => {
   }
 };
 
-// ✅ Password updates
+// ✅ Password Updates
 exports.updatePasswordById = async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -336,5 +311,23 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
     res.json({ message: "User deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+// ✅ Search by Username
+exports.searchUsersByUsername = async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query) {
+      return res.status(400).json({ message: "Search query is required" });
+    }
+
+    const users = await User.find({
+      username: { $regex: query, $options: "i" },
+    }).select("_id username profilePic bio");
+
+    res.status(200).json(users);
+  } catch (err) {
+    res.status(500).json({ message: "Search failed", error: err.message });
   }
 };
