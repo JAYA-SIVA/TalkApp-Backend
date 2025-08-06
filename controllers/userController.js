@@ -88,6 +88,22 @@ const getUserProfile = async (req, res) => {
   }
 };
 
+// ✅ Search Users by Username
+const searchUsersByUsername = async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query) return res.status(400).json({ message: "Search query required" });
+
+    const users = await User.find({
+      username: { $regex: query, $options: "i" },
+    }).select("_id username profilePic bio");
+
+    res.status(200).json(users);
+  } catch (err) {
+    res.status(500).json({ message: "Search failed", error: err.message });
+  }
+};
+
 // ✅ Get by Username
 const getUserByUsername = async (req, res) => {
   try {
@@ -314,23 +330,7 @@ const deleteUserByIdAndUsername = async (req, res) => {
   }
 };
 
-// ✅ Search Users
-const searchUsersByUsername = async (req, res) => {
-  try {
-    const { query } = req.query;
-    if (!query) return res.status(400).json({ message: "Search query required" });
-
-    const users = await User.find({
-      username: { $regex: query, $options: "i" },
-    }).select("_id username profilePic bio");
-
-    res.status(200).json(users);
-  } catch (err) {
-    res.status(500).json({ message: "Search failed", error: err.message });
-  }
-};
-
-// ✅ EXPORT ALL CONTROLLERS
+// ✅ Export All
 module.exports = {
   registerUser,
   loginUser,
@@ -340,6 +340,7 @@ module.exports = {
   getUserByEmail,
   getUserByUsernameOrEmail,
   updateUserByUsername,
+  updateUserProfile: updateUserByUsername, // alias if used in /:id route
   followUser,
   unfollowUser,
   updatePasswordById,
@@ -349,5 +350,4 @@ module.exports = {
   deleteUserByUsername,
   deleteUserByIdAndUsername,
   searchUsersByUsername,
-  updateUserProfile: updateUserByUsername // alias if used in /:id route
 };
