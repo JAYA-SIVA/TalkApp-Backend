@@ -19,7 +19,7 @@ const generateTokens = (user) => {
 };
 
 // ✅ Register
-exports.registerUser = async (req, res) => {
+const registerUser = async (req, res) => {
   try {
     const { username, email, password } = req.body;
     if (!username || !email || !password)
@@ -45,7 +45,7 @@ exports.registerUser = async (req, res) => {
 };
 
 // ✅ Login
-exports.loginUser = async (req, res) => {
+const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
@@ -67,8 +67,18 @@ exports.loginUser = async (req, res) => {
   }
 };
 
+// ✅ Get All Users
+const getAllUsers = async (req, res) => {
+  try {
+    const users = await User.find().select("-password");
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ✅ Get Profile by ID
-exports.getUserProfile = async (req, res) => {
+const getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -78,8 +88,8 @@ exports.getUserProfile = async (req, res) => {
   }
 };
 
-// ✅ Get User by Username
-exports.getUserByUsername = async (req, res) => {
+// ✅ Get by Username
+const getUserByUsername = async (req, res) => {
   try {
     const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -89,8 +99,8 @@ exports.getUserByUsername = async (req, res) => {
   }
 };
 
-// ✅ Get User by Email
-exports.getUserByEmail = async (req, res) => {
+// ✅ Get by Email
+const getUserByEmail = async (req, res) => {
   try {
     const user = await User.findOne({ email: new RegExp(`^${req.params.email}$`, "i") }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -100,8 +110,8 @@ exports.getUserByEmail = async (req, res) => {
   }
 };
 
-// ✅ Get User by Username or Email
-exports.getUserByUsernameOrEmail = async (req, res) => {
+// ✅ Get by Username or Email
+const getUserByUsernameOrEmail = async (req, res) => {
   try {
     const { identifier } = req.params;
     const user = await User.findOne({
@@ -119,7 +129,7 @@ exports.getUserByUsernameOrEmail = async (req, res) => {
 };
 
 // ✅ Update Profile by Username
-exports.updateUserByUsername = async (req, res) => {
+const updateUserByUsername = async (req, res) => {
   try {
     const { username } = req.params;
     const { bio, profilePic, email } = req.body;
@@ -164,8 +174,8 @@ exports.updateUserByUsername = async (req, res) => {
   }
 };
 
-// ✅ Follow User
-exports.followUser = async (req, res) => {
+// ✅ Follow
+const followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
     const currentId = req.user.id;
@@ -188,8 +198,8 @@ exports.followUser = async (req, res) => {
   }
 };
 
-// ✅ Unfollow User
-exports.unfollowUser = async (req, res) => {
+// ✅ Unfollow
+const unfollowUser = async (req, res) => {
   try {
     const targetId = req.params.id;
     const currentId = req.user.id;
@@ -210,18 +220,8 @@ exports.unfollowUser = async (req, res) => {
   }
 };
 
-// ✅ Get All Users
-exports.getAllUsers = async (req, res) => {
-  try {
-    const users = await User.find().select("-password");
-    res.json(users);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
 // ✅ Password Updates
-exports.updatePasswordById = async (req, res) => {
+const updatePasswordById = async (req, res) => {
   try {
     const { newPassword } = req.body;
     const user = await User.findById(req.params.id);
@@ -235,7 +235,7 @@ exports.updatePasswordById = async (req, res) => {
   }
 };
 
-exports.updatePasswordByUsername = async (req, res) => {
+const updatePasswordByUsername = async (req, res) => {
   try {
     const { newPassword } = req.body;
     const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
@@ -249,7 +249,7 @@ exports.updatePasswordByUsername = async (req, res) => {
   }
 };
 
-exports.updatePasswordByUsernameOrEmail = async (req, res) => {
+const updatePasswordByUsernameOrEmail = async (req, res) => {
   try {
     const { newPassword } = req.body;
     const identifier = req.params.identifier;
@@ -272,7 +272,7 @@ exports.updatePasswordByUsernameOrEmail = async (req, res) => {
 };
 
 // ✅ Delete User
-exports.deleteUserById = async (req, res) => {
+const deleteUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -284,7 +284,7 @@ exports.deleteUserById = async (req, res) => {
   }
 };
 
-exports.deleteUserByUsername = async (req, res) => {
+const deleteUserByUsername = async (req, res) => {
   try {
     const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -296,7 +296,7 @@ exports.deleteUserByUsername = async (req, res) => {
   }
 };
 
-exports.deleteUserByIdAndUsername = async (req, res) => {
+const deleteUserByIdAndUsername = async (req, res) => {
   try {
     const { id, username } = req.params;
 
@@ -314,13 +314,11 @@ exports.deleteUserByIdAndUsername = async (req, res) => {
   }
 };
 
-// ✅ Search by Username
-exports.searchUsersByUsername = async (req, res) => {
+// ✅ Search Users
+const searchUsersByUsername = async (req, res) => {
   try {
     const { query } = req.query;
-    if (!query) {
-      return res.status(400).json({ message: "Search query is required" });
-    }
+    if (!query) return res.status(400).json({ message: "Search query required" });
 
     const users = await User.find({
       username: { $regex: query, $options: "i" },
@@ -330,4 +328,26 @@ exports.searchUsersByUsername = async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Search failed", error: err.message });
   }
+};
+
+// ✅ EXPORT ALL CONTROLLERS
+module.exports = {
+  registerUser,
+  loginUser,
+  getAllUsers,
+  getUserProfile,
+  getUserByUsername,
+  getUserByEmail,
+  getUserByUsernameOrEmail,
+  updateUserByUsername,
+  followUser,
+  unfollowUser,
+  updatePasswordById,
+  updatePasswordByUsername,
+  updatePasswordByUsernameOrEmail,
+  deleteUserById,
+  deleteUserByUsername,
+  deleteUserByIdAndUsername,
+  searchUsersByUsername,
+  updateUserProfile: updateUserByUsername // alias if used in /:id route
 };
