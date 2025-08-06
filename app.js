@@ -30,7 +30,8 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "*", // 🔐 In production, restrict this
+    origin: "*", // ⚠️ Change to frontend URL in production
+    methods: ["GET", "POST", "PUT", "DELETE"],
   },
 });
 
@@ -43,7 +44,6 @@ app.use(express.urlencoded({ extended: true }));
 // ──────────────────────────────
 const apiRouter = express.Router();
 
-// 🔐 Routes (All mounted under /api)
 apiRouter.use("/auth", require("./routes/auth"));
 apiRouter.use("/user", require("./routes/userRoutes"));
 apiRouter.use("/otp", require("./routes/otpRoutes"));
@@ -73,29 +73,47 @@ app.get("/", (req, res) => {
 io.on("connection", (socket) => {
   console.log("🔌 New client connected:", socket.id);
 
-  // Join personal room
+  // 👤 Join personal room
   socket.on("setup", (userData) => {
     socket.join(userData._id);
     console.log("👤 User joined room:", userData._id);
     socket.emit("connected");
   });
 
+  // 💬 Join a chat room
   socket.on("join chat", (roomId) => {
     socket.join(roomId);
     console.log("📦 User joined chat:", roomId);
   });
 
+  // ✍️ Typing indicator
   socket.on("typing", (room) => socket.to(room).emit("typing"));
   socket.on("stop typing", (room) => socket.to(room).emit("stop typing"));
 
+  // 📩 New message sent
   socket.on("new message", (message) => {
     const chat = message.chat;
     if (!chat || !chat.users) return;
 
     chat.users.forEach((user) => {
       if (user._id === message.sender._id) return;
+
+      // 📤 Send new message
       socket.to(user._id).emit("message received", message);
+
+      // 📨 Optional: notify chat list to update preview
+      socket.to(user._id).emit("chat updated", message);
     });
+  });
+
+  // ✅ Read receipts
+  socket.on("message read", ({ chatId, messageId, readerId }) => {
+    socket.to(chatId).emit("message read", { messageId, readerId });
+  });
+
+  // 📬 Delivery status (if needed)
+  socket.on("message delivered", ({ chatId, messageId, userId }) => {
+    socket.to(chatId).emit("message delivered", { messageId, userId });
   });
 
   socket.on("disconnect", () => {
