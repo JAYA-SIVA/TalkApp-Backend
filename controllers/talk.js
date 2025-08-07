@@ -4,7 +4,7 @@ const User = require("../models/User");
 // 📤 Upload a post
 exports.uploadPost = async (req, res) => {
   try {
-    const { caption = "", type = "post" } = req.body;
+    const { caption = "" } = req.body;
     const file = req.file;
     const userId = req.user?.id || req.user?._id;
 
@@ -23,9 +23,11 @@ exports.uploadPost = async (req, res) => {
       ? "video"
       : "other";
 
+    const detectedType = mediaType === "video" ? "reel" : "post";
+
     const newPost = new Post({
       userId,
-      type,
+      type: detectedType,
       caption,
       images: mediaType === "image" ? [mediaUrl] : [],
       video: mediaType === "video" ? mediaUrl : "",
@@ -42,7 +44,7 @@ exports.uploadPost = async (req, res) => {
   }
 };
 
-// 📥 Get all posts (for Home)
+// 📥 Get all posts (Home Feed)
 exports.getAllPosts = async (req, res) => {
   try {
     const posts = await Post.find()
@@ -54,7 +56,7 @@ exports.getAllPosts = async (req, res) => {
   }
 };
 
-// 📽️ Get all video posts + reels (for Reels Page)
+// 📽️ Get all Reels (video-only)
 exports.getReels = async (req, res) => {
   try {
     const posts = await Post.find({
@@ -63,8 +65,8 @@ exports.getReels = async (req, res) => {
         { video: { $exists: true, $ne: "" } }
       ]
     })
-    .sort({ createdAt: -1 })
-    .populate("userId", "username profilePic");
+      .sort({ createdAt: -1 })
+      .populate("userId", "username profilePic");
 
     res.status(200).json(posts);
   } catch (error) {
@@ -111,7 +113,7 @@ exports.getPostsByUsername = async (req, res) => {
   }
 };
 
-// 👍 Like a post
+// ❤️ Like a post
 exports.likePost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -129,7 +131,7 @@ exports.likePost = async (req, res) => {
   }
 };
 
-// 👎 Unlike a post
+// 💔 Unlike a post
 exports.unlikePost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
