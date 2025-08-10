@@ -2,6 +2,41 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
 const User = require("../models/User");
+const Notification = require("../models/Notification"); // inline helper uses this
+
+/* ─────────────────────────────────────────
+   🔔 Inline Notification Helper (no utils file)
+   Emits Socket.IO event if global.io is available
+   ───────────────────────────────────────── */
+async function createNotification({ userId, fromUserId, type, postId = null, message = "" }) {
+  try {
+    if (!userId || !fromUserId || !type) return;
+    if (String(userId) === String(fromUserId)) return; // don't notify self
+
+    const n = await Notification.create({
+      userId,
+      fromUserId,
+      type,       // "like" | "comment" | "follow" | "message"
+      postId,
+      message,
+      seen: false,
+    });
+
+    if (global.io) {
+      global.io.to(String(userId)).emit("notification:new", {
+        _id: n._id,
+        type,
+        fromUserId,
+        postId,
+        message,
+        seen: false,
+        createdAt: n.createdAt,
+      });
+    }
+  } catch (e) {
+    console.error("notify error:", e.message);
+  }
+}
 
 /* ─────────────────────────────────────────
    Helper: return fresh populated post
@@ -21,6 +56,7 @@ const sendFresh = async (postId, res, okMsg = "OK") => {
 
 /* ─────────────────────────────────────────
    📤 Upload a post
+   expects multer single file in req.file (field: "media")
    ───────────────────────────────────────── */
 exports.uploadPost = async (req, res) => {
   try {
@@ -136,7 +172,7 @@ exports.getPostsByUsername = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────
-   ❤️ Like a post (atomic, no duplicates)
+   ❤️ Like a post (idempotent + notification)
    ───────────────────────────────────────── */
 exports.likePost = async (req, res) => {
   try {
@@ -145,16 +181,37 @@ exports.likePost = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid post id" });
     }
 
-    const userIdRaw = req.user?._id || req.user?.id;
-    if (!userIdRaw) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const actorId = (req.user?._id || req.user?.id)?.toString();
+    if (!actorId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    const uid = new mongoose.Types.ObjectId(userIdRaw);
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
 
-    await Post.findByIdAndUpdate(
-      postId,
-      { $addToSet: { likes: uid } },
-      { new: true }
-    );
+    const alreadyLiked = (post.likes || []).some((id) => id.toString() === actorId);
+    if (alreadyLiked) {
+      // No duplicate action / notify
+      return sendFresh(postId, res, "Already liked");
+    }
+
+    post.likes = post.likes || [];
+    post.likes.push(new mongoose.Types.ObjectId(actorId));
+    await post.save();
+
+    // 🔔 Notify post owner (skip self-like)
+    if (post.userId.toString() !== actorId) {
+      try {
+        const actor = await User.findById(actorId).select("username");
+        await createNotification({
+          userId: post.userId.toString(),
+          fromUserId: actorId,
+          type: "like",
+          postId: post._id.toString(),
+          message: `${actor?.username || "Someone"} liked your post`,
+        });
+      } catch (e) {
+        console.error("notify like:", e.message);
+      }
+    }
 
     return sendFresh(postId, res, "Post liked");
   } catch (error) {
@@ -173,10 +230,10 @@ exports.unlikePost = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid post id" });
     }
 
-    const userIdRaw = req.user?._id || req.user?.id;
-    if (!userIdRaw) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const actorId = (req.user?._id || req.user?.id)?.toString();
+    if (!actorId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    const uid = new mongoose.Types.ObjectId(userIdRaw);
+    const uid = new mongoose.Types.ObjectId(actorId);
 
     await Post.findByIdAndUpdate(
       postId,
@@ -192,21 +249,48 @@ exports.unlikePost = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────
-   💬 Add comment
+   💬 Add comment (accepts body.comment OR body.text)
+   + notification
    ───────────────────────────────────────── */
 exports.addComment = async (req, res) => {
   try {
-    const { text } = req.body;
+    const bodyText = typeof req.body?.comment === "string" ? req.body.comment : req.body?.text;
+    const text = (bodyText || "").trim();
+    if (!text) {
+      return res.status(400).json({ message: "Comment text is required" });
+    }
+
+    const actorId = (req.user?._id || req.user?.id)?.toString();
+    if (!actorId) return res.status(401).json({ message: "Unauthorized" });
+
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
+    post.comments = post.comments || [];
     post.comments.push({
-      userId: req.user._id,
+      userId: new mongoose.Types.ObjectId(actorId),
       comment: text,
       createdAt: new Date(),
     });
 
     await post.save();
+
+    // 🔔 Notify owner (skip self-comment)
+    if (post.userId.toString() !== actorId) {
+      try {
+        const actor = await User.findById(actorId).select("username");
+        await createNotification({
+          userId: post.userId.toString(),
+          fromUserId: actorId,
+          type: "comment",
+          postId: post._id.toString(),
+          message: `${actor?.username || "Someone"} commented on your post`,
+        });
+      } catch (e) {
+        console.error("notify comment:", e.message);
+      }
+    }
+
     const populated = await Post.findById(post._id)
       .populate("comments.userId", "username profilePic");
 
@@ -229,7 +313,7 @@ exports.getComments = async (req, res) => {
       .populate("comments.userId", "username profilePic");
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    res.status(200).json(post.comments);
+    res.status(200).json(post.comments || []);
   } catch (error) {
     res.status(500).json({ message: "Failed to get comments", error: error.message });
   }
