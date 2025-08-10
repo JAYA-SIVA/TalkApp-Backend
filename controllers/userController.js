@@ -89,13 +89,13 @@ const searchUsersByUsername = async (req, res) => {
 
     const users = await User.find({
       username: { $regex: query, $options: "i" },
-    }).select("_id username profilePic bio");
+    }).select("_id username profilePic bio isPrivate");
 
-    // normalize pics
     const normalized = users.map((u) => ({
       _id: u._id,
       username: u.username || "",
       bio: u.bio || "",
+      isPrivate: !!u.isPrivate,
       profilePic: makeAbsoluteUrl(req, u.profilePic || ""),
     }));
 
@@ -121,6 +121,7 @@ const getUserByUsername = async (req, res) => {
       profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
       followers: user.followers || [],
       following: user.following || [],
+      isPrivate: !!user.isPrivate,
       postsCount,
     });
   } catch (err) {
@@ -145,6 +146,7 @@ const getUserByEmail = async (req, res) => {
       profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
       followers: user.followers || [],
       following: user.following || [],
+      isPrivate: !!user.isPrivate,
       postsCount,
     });
   } catch (err) {
@@ -173,6 +175,7 @@ const getUserByUsernameOrEmail = async (req, res) => {
       profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
       followers: user.followers || [],
       following: user.following || [],
+      isPrivate: !!user.isPrivate,
       postsCount,
     });
   } catch (err) {
@@ -195,6 +198,7 @@ const getMe = async (req, res) => {
       profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
       followers: user.followers || [],
       following: user.following || [],
+      isPrivate: !!user.isPrivate,
       postsCount,
     });
   } catch (err) {
@@ -216,6 +220,7 @@ const getUserProfile = async (req, res) => {
       profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
       followers: user.followers || [],
       following: user.following || [],
+      isPrivate: !!user.isPrivate,
       postsCount,
     });
   } catch (err) {
@@ -276,7 +281,7 @@ const updateUserByUsername = async (req, res) => {
   }
 };
 
-// TRUE update by ID (no aliasing)
+// Update by ID
 const updateUserProfileById = async (req, res) => {
   try {
     const { bio, profilePic, email, username } = req.body;
@@ -323,7 +328,25 @@ const updateUserProfileById = async (req, res) => {
   }
 };
 
+/* ------------------------- Privacy (NEW) ------------------------- */
+// PUT /api/user/privacy  { isPrivate: boolean }
+const setPrivacy = async (req, res) => {
+  try {
+    const { isPrivate } = req.body;
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    me.isPrivate = !!isPrivate;
+    await me.save();
+    res.json({ message: "Privacy updated", isPrivate: me.isPrivate });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 /* ----------------------------- Follow / Unfollow ------------------------- */
+const isIdInList = (list, id) => (list || []).some((x) => x.toString() === id);
+
 const followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -335,14 +358,32 @@ const followUser = async (req, res) => {
       User.findById(targetId),
       User.findById(currentId),
     ]);
-
     if (!target || !current) return res.status(404).json({ message: "User not found" });
 
-    if (!target.followers.includes(currentId)) target.followers.push(currentId);
-    if (!current.following.includes(targetId)) current.following.push(targetId);
+    // Already following?
+    if (isIdInList(target.followers, currentId)) {
+      return res.json({ message: "Already following", status: "following" });
+    }
+
+    // Private → create follow request
+    if (target.isPrivate) {
+      if (!isIdInList(target.followRequests, currentId)) {
+        target.followRequests = target.followRequests || [];
+        target.followRequests.push(currentId);
+        await target.save();
+      }
+      return res.json({ message: "Follow request sent", status: "requested" });
+    }
+
+    // Public → follow immediately
+    target.followers = target.followers || [];
+    current.following = current.following || [];
+
+    if (!isIdInList(target.followers, currentId)) target.followers.push(currentId);
+    if (!isIdInList(current.following, targetId)) current.following.push(targetId);
 
     await Promise.all([target.save(), current.save()]);
-    res.json({ message: "Followed successfully" });
+    res.json({ message: "Followed successfully", status: "following" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -359,11 +400,133 @@ const unfollowUser = async (req, res) => {
     ]);
     if (!target || !current) return res.status(404).json({ message: "User not found" });
 
-    target.followers = target.followers.filter((id) => id.toString() !== currentId);
-    current.following = current.following.filter((id) => id.toString() !== targetId);
+    target.followers = (target.followers || []).filter((id) => id.toString() !== currentId);
+    current.following = (current.following || []).filter((id) => id.toString() !== targetId);
+
+    // Also remove any pending request
+    target.followRequests = (target.followRequests || []).filter((id) => id.toString() !== currentId);
 
     await Promise.all([target.save(), current.save()]);
-    res.json({ message: "Unfollowed successfully" });
+    res.json({ message: "Unfollowed successfully", status: "none" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ---------------------- Follow Requests (NEW) ---------------------- */
+// GET /api/user/requests  → list of users who requested to follow me
+const getMyFollowRequests = async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id)
+      .select("followRequests")
+      .populate("followRequests", "_id username profilePic bio");
+    const list = (me?.followRequests || []).map((u) => ({
+      _id: u._id,
+      username: u.username,
+      bio: u.bio || "",
+      profilePic: makeAbsoluteUrl(req, u.profilePic || ""),
+    }));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// PUT /api/user/requests/accept/:requesterId
+const acceptFollowRequest = async (req, res) => {
+  try {
+    const requesterId = req.params.requesterId;
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    if (!isIdInList(me.followRequests || [], requesterId)) {
+      return res.status(400).json({ message: "No such request" });
+    }
+
+    // Remove from requests, add to followers
+    me.followRequests = (me.followRequests || []).filter((id) => id.toString() !== requesterId);
+    me.followers = me.followers || [];
+    if (!isIdInList(me.followers, requesterId)) me.followers.push(requesterId);
+
+    const requester = await User.findById(requesterId);
+    if (!requester) return res.status(404).json({ message: "Requester not found" });
+
+    requester.following = requester.following || [];
+    if (!isIdInList(requester.following, me._id.toString())) requester.following.push(me._id);
+
+    await Promise.all([me.save(), requester.save()]);
+    res.json({ message: "Request accepted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// PUT /api/user/requests/reject/:requesterId
+const rejectFollowRequest = async (req, res) => {
+  try {
+    const requesterId = req.params.requesterId;
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: "User not found" });
+
+    me.followRequests = (me.followRequests || []).filter((id) => id.toString() !== requesterId);
+    await me.save();
+    res.json({ message: "Request rejected" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// DELETE /api/user/requests/cancel/:targetId   (I cancel the request I sent)
+const cancelSentFollowRequest = async (req, res) => {
+  try {
+    const targetId = req.params.targetId;
+    const target = await User.findById(targetId);
+    if (!target) return res.status(404).json({ message: "User not found" });
+
+    target.followRequests = (target.followRequests || []).filter((id) => id.toString() !== req.user.id);
+    await target.save();
+    res.json({ message: "Request cancelled" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ----------------- Convenience populated lists (NEW) ----------------- */
+// GET /api/user/followers/list/:id
+const getFollowersForUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id)
+      .select("followers")
+      .populate("followers", "_id username profilePic bio");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const list = (user.followers || []).map((u) => ({
+      _id: u._id,
+      username: u.username,
+      bio: u.bio || "",
+      profilePic: makeAbsoluteUrl(req, u.profilePic || ""),
+    }));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/user/following/list/:id
+const getFollowingForUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id)
+      .select("following")
+      .populate("following", "_id username profilePic bio");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const list = (user.following || []).map((u) => ({
+      _id: u._id,
+      username: u.username,
+      bio: u.bio || "",
+      profilePic: makeAbsoluteUrl(req, u.profilePic || ""),
+    }));
+    res.json(list);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -491,9 +654,16 @@ module.exports = {
   updateUserByUsername,
   updateUserProfileById,
 
-  // social
+  // social (public + requests)
   followUser,
   unfollowUser,
+  getMyFollowRequests,
+  acceptFollowRequest,
+  rejectFollowRequest,
+  cancelSentFollowRequest,
+  setPrivacy,
+  getFollowersForUser,
+  getFollowingForUser,
 
   // passwords
   updatePasswordById,
