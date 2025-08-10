@@ -3,6 +3,9 @@ const Post = require("../models/Post");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
+// 🔔 lightweight helper (as we discussed)
+const createNotification = require("../utils/createNotification");
+
 /* ----------------------------- Token helpers ----------------------------- */
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
@@ -365,17 +368,29 @@ const followUser = async (req, res) => {
       return res.json({ message: "Already following", status: "following" });
     }
 
-    // Private → create follow request
+    // Private → create follow request (and notify target)
     if (target.isPrivate) {
       if (!isIdInList(target.followRequests, currentId)) {
         target.followRequests = target.followRequests || [];
         target.followRequests.push(currentId);
         await target.save();
+
+        // 🔔 notify target about follow request
+        try {
+          await createNotification({
+            userId: targetId,
+            fromUserId: currentId,
+            type: "follow_request",
+            message: `${current.username} requested to follow you`,
+          });
+        } catch (e) {
+          console.error("notify follow_request:", e.message);
+        }
       }
       return res.json({ message: "Follow request sent", status: "requested" });
     }
 
-    // Public → follow immediately
+    // Public → follow immediately (and notify target)
     target.followers = target.followers || [];
     current.following = current.following || [];
 
@@ -383,6 +398,19 @@ const followUser = async (req, res) => {
     if (!isIdInList(current.following, targetId)) current.following.push(targetId);
 
     await Promise.all([target.save(), current.save()]);
+
+    // 🔔 notify target about new follower
+    try {
+      await createNotification({
+        userId: targetId,
+        fromUserId: currentId,
+        type: "follow",
+        message: `${current.username} started following you`,
+      });
+    } catch (e) {
+      console.error("notify follow:", e.message);
+    }
+
     res.json({ message: "Followed successfully", status: "following" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -407,6 +435,7 @@ const unfollowUser = async (req, res) => {
     target.followRequests = (target.followRequests || []).filter((id) => id.toString() !== currentId);
 
     await Promise.all([target.save(), current.save()]);
+    // (No notification for unfollow)
     res.json({ message: "Unfollowed successfully", status: "none" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -455,6 +484,19 @@ const acceptFollowRequest = async (req, res) => {
     if (!isIdInList(requester.following, me._id.toString())) requester.following.push(me._id);
 
     await Promise.all([me.save(), requester.save()]);
+
+    // 🔔 notify requester that you accepted
+    try {
+      await createNotification({
+        userId: requesterId,
+        fromUserId: me._id.toString(),
+        type: "follow",
+        message: `${me.username} accepted your follow request`,
+      });
+    } catch (e) {
+      console.error("notify accept follow_request:", e.message);
+    }
+
     res.json({ message: "Request accepted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -470,6 +512,8 @@ const rejectFollowRequest = async (req, res) => {
 
     me.followRequests = (me.followRequests || []).filter((id) => id.toString() !== requesterId);
     await me.save();
+
+    // (Optional) you could notify requester of rejection using a "message" type
     res.json({ message: "Request rejected" });
   } catch (err) {
     res.status(500).json({ message: err.message });
