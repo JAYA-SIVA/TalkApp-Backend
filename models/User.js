@@ -55,6 +55,18 @@ const userSchema = new mongoose.Schema(
       },
     ],
 
+    // 🛡️ Privacy + Follow Requests (NEW)
+    isPrivate: {
+      type: Boolean,
+      default: false, // true → requests must be accepted
+    },
+    followRequests: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User", // users who requested to follow me
+      },
+    ],
+
     // 🛡️ User Role
     role: {
       type: String,
@@ -62,8 +74,11 @@ const userSchema = new mongoose.Schema(
       default: "user",
     },
 
-    // 🔁 Token Management (optional but useful for refresh token sessions)
-    refreshTokens: [String],
+    // 🔁 Token Management
+    refreshTokens: {
+      type: [String],
+      default: [],
+    },
   },
   {
     timestamps: true, // adds createdAt, updatedAt
@@ -71,6 +86,22 @@ const userSchema = new mongoose.Schema(
     toObject: { virtuals: true },
   }
 );
+
+// ✅ Ensure array defaults (safer if existing docs missing fields)
+if (!userSchema.path("followers").options.default) userSchema.path("followers").options.default = [];
+if (!userSchema.path("following").options.default) userSchema.path("following").options.default = [];
+if (!userSchema.path("followRequests").options.default) userSchema.path("followRequests").options.default = [];
+
+// 🔢 Virtual counts (handy for API responses/UI)
+userSchema.virtual("followersCount").get(function () {
+  return Array.isArray(this.followers) ? this.followers.length : 0;
+});
+userSchema.virtual("followingCount").get(function () {
+  return Array.isArray(this.following) ? this.following.length : 0;
+});
+userSchema.virtual("requestsCount").get(function () {
+  return Array.isArray(this.followRequests) ? this.followRequests.length : 0;
+});
 
 // 🔍 Indexing for faster queries
 userSchema.index({ username: 1 });
