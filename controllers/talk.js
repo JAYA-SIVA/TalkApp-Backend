@@ -1,7 +1,27 @@
+// controllers/talk.js
+const mongoose = require("mongoose");
 const Post = require("../models/Post");
 const User = require("../models/User");
 
-// 📤 Upload a post
+/* ────────────────────────────────────────────────────────────
+   Helper: return fresh populated post with likesCount
+   ──────────────────────────────────────────────────────────── */
+const sendFresh = async (postId, res, okMsg = "OK") => {
+  const fresh = await Post.findById(postId)
+    .populate("userId", "username profilePic")
+    .populate("comments.userId", "username profilePic");
+  if (!fresh) return res.status(404).json({ success: false, message: "Post not found" });
+  return res.json({
+    success: true,
+    message: okMsg,
+    post: fresh,
+    likesCount: fresh.likes?.length || 0,
+  });
+};
+
+/* ────────────────────────────────────────────────────────────
+   📤 Upload a post
+   ──────────────────────────────────────────────────────────── */
 exports.uploadPost = async (req, res) => {
   try {
     const { caption = "" } = req.body;
@@ -11,7 +31,6 @@ exports.uploadPost = async (req, res) => {
     if (!file) {
       return res.status(400).json({ message: "❌ Media file is required" });
     }
-
     if (!userId) {
       return res.status(401).json({ message: "❌ Unauthorized: No user ID found" });
     }
@@ -44,7 +63,9 @@ exports.uploadPost = async (req, res) => {
   }
 };
 
-// 📥 Get all posts (Home Feed)
+/* ────────────────────────────────────────────────────────────
+   📥 Get all posts (Home Feed)
+   ──────────────────────────────────────────────────────────── */
 exports.getAllPosts = async (req, res) => {
   try {
     const posts = await Post.find()
@@ -56,14 +77,13 @@ exports.getAllPosts = async (req, res) => {
   }
 };
 
-// 📽️ Get all Reels (video-only)
+/* ────────────────────────────────────────────────────────────
+   📽️ Get all Reels (video-only)
+   ──────────────────────────────────────────────────────────── */
 exports.getReels = async (req, res) => {
   try {
     const posts = await Post.find({
-      $or: [
-        { type: "reel" },
-        { video: { $exists: true, $ne: "" } }
-      ]
+      $or: [{ type: "reel" }, { video: { $exists: true, $ne: "" } }],
     })
       .sort({ createdAt: -1 })
       .populate("userId", "username profilePic");
@@ -74,11 +94,15 @@ exports.getReels = async (req, res) => {
   }
 };
 
-// 🆔 Get post by ID
+/* ────────────────────────────────────────────────────────────
+   🆔 Get post by ID
+   ──────────────────────────────────────────────────────────── */
 exports.getPostById = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id)
-      .populate("userId", "username profilePic");
+    const post = await Post.findById(req.params.id).populate(
+      "userId",
+      "username profilePic"
+    );
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.status(200).json(post);
   } catch (error) {
@@ -86,7 +110,9 @@ exports.getPostById = async (req, res) => {
   }
 };
 
-// 👤 Get posts by User ID
+/* ────────────────────────────────────────────────────────────
+   👤 Get posts by User ID
+   ──────────────────────────────────────────────────────────── */
 exports.getPostsByUser = async (req, res) => {
   try {
     const posts = await Post.find({ userId: req.params.id })
@@ -98,7 +124,9 @@ exports.getPostsByUser = async (req, res) => {
   }
 };
 
-// 🔍 Get posts by Username
+/* ────────────────────────────────────────────────────────────
+   🔍 Get posts by Username
+   ──────────────────────────────────────────────────────────── */
 exports.getPostsByUsername = async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });
@@ -113,40 +141,86 @@ exports.getPostsByUsername = async (req, res) => {
   }
 };
 
-// ❤️ Like a post
+/* ────────────────────────────────────────────────────────────
+   ❤️ Like a post  (atomic + no duplicates)
+   ──────────────────────────────────────────────────────────── */
 exports.likePost = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-
-    const userId = req.user._id;
-    if (!post.likes.includes(userId)) {
-      post.likes.push(userId);
-      await post.save();
+    const postId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
     }
 
-    res.status(200).json({ message: "Post liked", likes: post.likes });
+    const userIdRaw = req.user?._id || req.user?.id;
+    if (!userIdRaw) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Detect likes type (ObjectId[] vs string[]) without breaking existing data
+    const probe = await Post.findById(postId).select("likes");
+    if (!probe) return res.status(404).json({ success: false, message: "Post not found" });
+
+    const likesIsStringArray =
+      probe.likes.length > 0 && typeof probe.likes[0] === "string";
+
+    const uid = likesIsStringArray
+      ? String(userIdRaw)
+      : new mongoose.Types.ObjectId(userIdRaw);
+
+    await Post.findByIdAndUpdate(
+      postId,
+      { $addToSet: { likes: uid } },
+      { new: true }
+    );
+
+    return sendFresh(postId, res, "Post liked");
   } catch (error) {
-    res.status(500).json({ message: "Like failed", error: error.message });
+    console.error("Like failed:", error);
+    res.status(500).json({ success: false, message: "Like failed", error: error.message });
   }
 };
 
-// 💔 Unlike a post
+/* ────────────────────────────────────────────────────────────
+   💔 Unlike a post  (atomic)
+   ──────────────────────────────────────────────────────────── */
 exports.unlikePost = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
+    const postId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
 
-    post.likes = post.likes.filter(id => id.toString() !== req.user._id.toString());
-    await post.save();
+    const userIdRaw = req.user?._id || req.user?.id;
+    if (!userIdRaw) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
 
-    res.status(200).json({ message: "Post unliked", likes: post.likes });
+    const probe = await Post.findById(postId).select("likes");
+    if (!probe) return res.status(404).json({ success: false, message: "Post not found" });
+
+    const likesIsStringArray =
+      probe.likes.length > 0 && typeof probe.likes[0] === "string";
+
+    const uid = likesIsStringArray
+      ? String(userIdRaw)
+      : new mongoose.Types.ObjectId(userIdRaw);
+
+    await Post.findByIdAndUpdate(
+      postId,
+      { $pull: { likes: uid } },
+      { new: true }
+    );
+
+    return sendFresh(postId, res, "Post unliked");
   } catch (error) {
-    res.status(500).json({ message: "Unlike failed", error: error.message });
+    console.error("Unlike failed:", error);
+    res.status(500).json({ success: false, message: "Unlike failed", error: error.message });
   }
 };
 
-// 💬 Add comment
+/* ────────────────────────────────────────────────────────────
+   💬 Add comment
+   ──────────────────────────────────────────────────────────── */
 exports.addComment = async (req, res) => {
   try {
     const { text } = req.body;
@@ -160,17 +234,29 @@ exports.addComment = async (req, res) => {
     });
 
     await post.save();
-    res.status(201).json({ message: "Comment added", comments: post.comments });
+
+    // return with population for UI
+    const populated = await Post.findById(post._id)
+      .populate("comments.userId", "username profilePic");
+    res.status(201).json({
+      message: "Comment added",
+      comments: populated?.comments || [],
+      success: true,
+    });
   } catch (error) {
     res.status(500).json({ message: "Comment failed", error: error.message });
   }
 };
 
-// 🗨️ Get comments of a post
+/* ────────────────────────────────────────────────────────────
+   🗨️ Get comments of a post
+   ──────────────────────────────────────────────────────────── */
 exports.getComments = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id)
-      .populate("comments.userId", "username profilePic");
+    const post = await Post.findById(req.params.id).populate(
+      "comments.userId",
+      "username profilePic"
+    );
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     res.status(200).json(post.comments);
@@ -179,14 +265,18 @@ exports.getComments = async (req, res) => {
   }
 };
 
-// ❌ Delete post
+/* ────────────────────────────────────────────────────────────
+   ❌ Delete post
+   ──────────────────────────────────────────────────────────── */
 exports.deletePost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     if (post.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Unauthorized: Cannot delete others' posts" });
+      return res
+        .status(403)
+        .json({ message: "Unauthorized: Cannot delete others' posts" });
     }
 
     await Post.findByIdAndDelete(req.params.id);
