@@ -3,7 +3,7 @@ const Post = require("../models/Post");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// ✅ Generate Access and Refresh Tokens
+/* ----------------------------- Token helpers ----------------------------- */
 const generateTokens = (user) => {
   const payload = { id: user._id, username: user.username };
 
@@ -18,7 +18,15 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
-// ✅ Register
+/* ------------------------------ URL helpers ------------------------------ */
+const makeAbsoluteUrl = (req, url) => {
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  const base = `${req.protocol}://${req.get("host")}`;
+  return `${base}${url.startsWith("/") ? "" : "/"}${url}`;
+};
+
+/* --------------------------------- Auth ---------------------------------- */
 const registerUser = async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -32,7 +40,6 @@ const registerUser = async (req, res) => {
     const user = await User.create({ username, email, password: hash });
 
     const tokens = generateTokens(user);
-
     res.status(201).json({
       _id: user._id,
       username: user.username,
@@ -44,7 +51,6 @@ const registerUser = async (req, res) => {
   }
 };
 
-// ✅ Login
 const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -55,7 +61,6 @@ const loginUser = async (req, res) => {
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
     const tokens = generateTokens(user);
-
     res.json({
       _id: user._id,
       username: user.username,
@@ -67,7 +72,7 @@ const loginUser = async (req, res) => {
   }
 };
 
-// ✅ Get All Users
+/* ----------------------------- User - Queries ---------------------------- */
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.find().select("-password");
@@ -77,18 +82,6 @@ const getAllUsers = async (req, res) => {
   }
 };
 
-// ✅ Get Profile by ID
-const getUserProfile = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select("-password");
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-// ✅ Search Users by Username
 const searchUsersByUsername = async (req, res) => {
   try {
     const { query } = req.query;
@@ -98,35 +91,67 @@ const searchUsersByUsername = async (req, res) => {
       username: { $regex: query, $options: "i" },
     }).select("_id username profilePic bio");
 
-    res.status(200).json(users);
+    // normalize pics
+    const normalized = users.map((u) => ({
+      _id: u._id,
+      username: u.username || "",
+      bio: u.bio || "",
+      profilePic: makeAbsoluteUrl(req, u.profilePic || ""),
+    }));
+
+    res.status(200).json(normalized);
   } catch (err) {
     res.status(500).json({ message: "Search failed", error: err.message });
   }
 };
 
-// ✅ Get by Username
 const getUserByUsername = async (req, res) => {
   try {
-    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") }).select("-password");
+    const user = await User.findOne({
+      username: new RegExp(`^${req.params.username}$`, "i"),
+    }).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+
+    const postsCount = await Post.countDocuments({ userId: user._id });
+    res.json({
+      _id: user._id,
+      username: user.username || "",
+      email: user.email || "",
+      bio: user.bio || "No bio added",
+      profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
+      followers: user.followers || [],
+      following: user.following || [],
+      postsCount,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-// ✅ Get by Email
 const getUserByEmail = async (req, res) => {
   try {
-    const user = await User.findOne({ email: new RegExp(`^${req.params.email}$`, "i") }).select("-password");
+    const user = await User.findOne({
+      email: new RegExp(`^${req.params.email}$`, "i"),
+    }).select("-password");
+
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+
+    const postsCount = await Post.countDocuments({ userId: user._id });
+    res.json({
+      _id: user._id,
+      username: user.username || "",
+      email: user.email || "",
+      bio: user.bio || "No bio added",
+      profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
+      followers: user.followers || [],
+      following: user.following || [],
+      postsCount,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-// ✅ Get by Username or Email
 const getUserByUsernameOrEmail = async (req, res) => {
   try {
     const { identifier } = req.params;
@@ -138,42 +163,103 @@ const getUserByUsernameOrEmail = async (req, res) => {
     }).select("-password");
 
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+
+    const postsCount = await Post.countDocuments({ userId: user._id });
+    res.json({
+      _id: user._id,
+      username: user.username || "",
+      email: user.email || "",
+      bio: user.bio || "No bio added",
+      profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
+      followers: user.followers || [],
+      following: user.following || [],
+      postsCount,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-// ✅ Update Profile by Username
+/* ------------------------------ User - Me/Id ----------------------------- */
+const getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const postsCount = await Post.countDocuments({ userId: user._id });
+    res.json({
+      _id: user._id,
+      username: user.username || "",
+      email: user.email || "",
+      bio: user.bio || "No bio added",
+      profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
+      followers: user.followers || [],
+      following: user.following || [],
+      postsCount,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+const getUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const postsCount = await Post.countDocuments({ userId: user._id });
+    res.json({
+      _id: user._id,
+      username: user.username || "",
+      email: user.email || "",
+      bio: user.bio || "No bio added",
+      profilePic: makeAbsoluteUrl(req, user.profilePic || ""),
+      followers: user.followers || [],
+      following: user.following || [],
+      postsCount,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ------------------------------ User - Update ---------------------------- */
 const updateUserByUsername = async (req, res) => {
   try {
     const { username } = req.params;
     const { bio, profilePic, email } = req.body;
 
-    const user = await User.findOne({ username: new RegExp(`^${username}$`, "i") });
+    const user = await User.findOne({
+      username: new RegExp(`^${username}$`, "i"),
+    });
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    // username change
     if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
-      const existing = await User.findOne({ username: new RegExp(`^${req.body.username}$`, "i") });
+      const existing = await User.findOne({
+        username: new RegExp(`^${req.body.username}$`, "i"),
+      });
       if (existing && existing._id.toString() !== user._id.toString()) {
         return res.status(400).json({ message: "Username already taken" });
       }
       user.username = req.body.username;
     }
 
+    // email change
     if (email && email.toLowerCase() !== user.email.toLowerCase()) {
-      const existingEmail = await User.findOne({ email: new RegExp(`^${email}$`, "i") });
+      const existingEmail = await User.findOne({
+        email: new RegExp(`^${email}$`, "i"),
+      });
       if (existingEmail && existingEmail._id.toString() !== user._id.toString()) {
         return res.status(400).json({ message: "Email already in use" });
       }
       user.email = email;
     }
 
-    if (bio) user.bio = bio;
-    if (profilePic) user.profilePic = profilePic;
+    if (typeof bio === "string") user.bio = bio;
+    if (typeof profilePic === "string") user.profilePic = profilePic;
 
     const updated = await user.save();
-
     res.json({
       success: true,
       message: "Profile updated successfully",
@@ -181,8 +267,8 @@ const updateUserByUsername = async (req, res) => {
         _id: updated._id,
         username: updated.username,
         email: updated.email,
-        bio: updated.bio,
-        profilePic: updated.profilePic,
+        bio: updated.bio || "No bio added",
+        profilePic: makeAbsoluteUrl(req, updated.profilePic || ""),
       },
     });
   } catch (err) {
@@ -190,12 +276,60 @@ const updateUserByUsername = async (req, res) => {
   }
 };
 
-// ✅ Follow
+// TRUE update by ID (no aliasing)
+const updateUserProfileById = async (req, res) => {
+  try {
+    const { bio, profilePic, email, username } = req.body;
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (username && username.toLowerCase() !== user.username.toLowerCase()) {
+      const exists = await User.findOne({
+        username: new RegExp(`^${username}$`, "i"),
+      });
+      if (exists && exists._id.toString() !== user._id.toString()) {
+        return res.status(400).json({ message: "Username already taken" });
+      }
+      user.username = username;
+    }
+
+    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+      const exists = await User.findOne({
+        email: new RegExp(`^${email}$`, "i"),
+      });
+      if (exists && exists._id.toString() !== user._id.toString()) {
+        return res.status(400).json({ message: "Email already in use" });
+      }
+      user.email = email;
+    }
+
+    if (typeof bio === "string") user.bio = bio;
+    if (typeof profilePic === "string") user.profilePic = profilePic;
+
+    const updated = await user.save();
+    res.json({
+      success: true,
+      message: "Profile updated",
+      user: {
+        _id: updated._id,
+        username: updated.username,
+        email: updated.email,
+        bio: updated.bio || "No bio added",
+        profilePic: makeAbsoluteUrl(req, updated.profilePic || ""),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ----------------------------- Follow / Unfollow ------------------------- */
 const followUser = async (req, res) => {
   try {
     const targetId = req.params.id;
     const currentId = req.user.id;
-    if (targetId === currentId) return res.status(400).json({ message: "Cannot follow yourself" });
+    if (targetId === currentId)
+      return res.status(400).json({ message: "Cannot follow yourself" });
 
     const [target, current] = await Promise.all([
       User.findById(targetId),
@@ -214,7 +348,6 @@ const followUser = async (req, res) => {
   }
 };
 
-// ✅ Unfollow
 const unfollowUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -236,10 +369,12 @@ const unfollowUser = async (req, res) => {
   }
 };
 
-// ✅ Password Updates
+/* ------------------------------- Passwords ------------------------------- */
 const updatePasswordById = async (req, res) => {
   try {
     const { newPassword } = req.body;
+    if (!newPassword) return res.status(400).json({ message: "newPassword required" });
+
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -254,7 +389,11 @@ const updatePasswordById = async (req, res) => {
 const updatePasswordByUsername = async (req, res) => {
   try {
     const { newPassword } = req.body;
-    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
+    if (!newPassword) return res.status(400).json({ message: "newPassword required" });
+
+    const user = await User.findOne({
+      username: new RegExp(`^${req.params.username}$`, "i"),
+    });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     user.password = await bcrypt.hash(newPassword, 10);
@@ -268,8 +407,9 @@ const updatePasswordByUsername = async (req, res) => {
 const updatePasswordByUsernameOrEmail = async (req, res) => {
   try {
     const { newPassword } = req.body;
-    const identifier = req.params.identifier;
+    if (!newPassword) return res.status(400).json({ message: "newPassword required" });
 
+    const identifier = req.params.identifier;
     const user = await User.findOne({
       $or: [
         { username: new RegExp(`^${identifier}$`, "i") },
@@ -287,7 +427,7 @@ const updatePasswordByUsernameOrEmail = async (req, res) => {
   }
 };
 
-// ✅ Delete User
+/* --------------------------------- Delete -------------------------------- */
 const deleteUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -302,7 +442,9 @@ const deleteUserById = async (req, res) => {
 
 const deleteUserByUsername = async (req, res) => {
   try {
-    const user = await User.findOne({ username: new RegExp(`^${req.params.username}$`, "i") });
+    const user = await User.findOne({
+      username: new RegExp(`^${req.params.username}$`, "i"),
+    });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     await user.deleteOne();
@@ -330,24 +472,36 @@ const deleteUserByIdAndUsername = async (req, res) => {
   }
 };
 
-// ✅ Export All
+/* --------------------------------- Exports -------------------------------- */
 module.exports = {
+  // auth
   registerUser,
   loginUser,
+
+  // queries
   getAllUsers,
-  getUserProfile,
+  searchUsersByUsername,
   getUserByUsername,
   getUserByEmail,
   getUserByUsernameOrEmail,
+
+  // profile
+  getMe,
+  getUserProfile,
   updateUserByUsername,
-  updateUserProfile: updateUserByUsername, // alias if used in /:id route
+  updateUserProfileById,
+
+  // social
   followUser,
   unfollowUser,
+
+  // passwords
   updatePasswordById,
   updatePasswordByUsername,
   updatePasswordByUsernameOrEmail,
+
+  // deletes
   deleteUserById,
   deleteUserByUsername,
   deleteUserByIdAndUsername,
-  searchUsersByUsername,
 };
