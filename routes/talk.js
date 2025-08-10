@@ -1,47 +1,55 @@
+// routes/talk.js
 const express = require("express");
 const router = express.Router();
 
-// ✅ Middleware
-const upload = require("../middleware/multer"); // Cloudinary + Multer
-const auth = require("../middleware/auth");     // JWT Token protection
+// 🔐 Middleware
+const auth = require("../middleware/auth");          // JWT guard
+const upload = require("../middleware/multer");      // Multer (Cloudinary adapter)
 
-// ✅ Controllers
+// 🎮 Controllers (keep the file name you already use)
 const {
-  uploadPost,
-  getAllPosts,
-  getPostById,
-  getPostsByUser,
-  getPostsByUsername,
-  likePost,
-  unlikePost,
-  addComment,
-  getComments,
-  deletePost,
-  getReels, // ✅ NEW: Get reels/videos for Reels Page
+  // Create / Upload
+  uploadPost,                // expects multipart field: "media"
+  // Feed
+  getAllPosts,               // GET /all and GET /
+  getPostById,               // GET /post/:id
+  getPostsByUser,            // GET /user/:id
+  getPostsByUsername,        // GET /by-username/:username
+  // Reels
+  getReels,                  // GET /reels
+  // Reactions
+  likePost,                  // PUT /like/:id
+  unlikePost,                // PUT /unlike/:id
+  // Comments
+  addComment,                // POST /comment/:id   body: { comment: "..." }
+  getComments,               // GET /comments/:id
+  // Delete
+  deletePost,                // DELETE /delete/:id
 } = require("../controllers/talk");
 
 // ─────────────────────────────
-// 📤 Upload a post (image or video)
+// 📤 Upload a post (image/video)
+// Multipart: field name must be "media"
 // ─────────────────────────────
 router.post("/upload", auth, upload.single("media"), uploadPost);
 
 // ─────────────────────────────
-// 📥 Get all posts (Home Feed)
+// 📰 Feeds
 // ─────────────────────────────
-router.get("/all", getAllPosts);         // Open feed
-router.get("/", auth, getAllPosts);      // Authenticated feed
+router.get("/all", getAllPosts);     // public feed (optional)
+router.get("/", auth, getAllPosts);  // authed feed
 
 // ─────────────────────────────
-// 📽️ Get reels (videos + reel type posts) — For Reels Page
+// 🎬 Reels (video-type posts)
 // ─────────────────────────────
-router.get("/reels", getReels); // ✅ This is the NEW route
+router.get("/reels", getReels);
 
 // ─────────────────────────────
 // 🔍 Fetch posts
 // ─────────────────────────────
-router.get("/post/:id", getPostById);                     // By Post ID
-router.get("/user/:id", getPostsByUser);                  // By User ID
-router.get("/by-username/:username", getPostsByUsername); // By Username
+router.get("/post/:id", getPostById);                     // by post id
+router.get("/user/:id", auth, getPostsByUser);            // by user id
+router.get("/by-username/:username", getPostsByUsername); // by username
 
 // ─────────────────────────────
 // ❤️ Likes
@@ -51,6 +59,7 @@ router.put("/unlike/:id", auth, unlikePost);
 
 // ─────────────────────────────
 // 💬 Comments
+// body: { comment: "text" }
 // ─────────────────────────────
 router.post("/comment/:id", auth, addComment);
 router.get("/comments/:id", getComments);
