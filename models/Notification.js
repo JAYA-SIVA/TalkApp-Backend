@@ -1,60 +1,101 @@
 const mongoose = require("mongoose");
 
+const NOTIFICATION_TYPES = [
+  "follow",          // someone followed you
+  "follow_request",  // someone requested to follow (private account)
+  "like",
+  "unlike",
+  "comment",
+  "message"          // direct message
+];
+
 const notificationSchema = new mongoose.Schema(
   {
-    // 👤 User who will receive the notification
+    // receiver
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
     },
 
-    // 👤 User who triggered the notification
+    // actor (who did the action)
     fromUserId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
     },
 
-    // 📌 Notification type
+    // event type
     type: {
       type: String,
-      enum: ["like", "comment", "follow", "message"],
+      enum: NOTIFICATION_TYPES,
       required: true,
+      index: true,
     },
 
-    // 📷 Optional: Related post (for like/comment)
+    // related post for like/comment (nullable)
     postId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Post",
       default: null,
+      index: true,
     },
 
-    // ✉️ Custom message (optional)
+    // optional extra info (safe place for future-proof data)
+    meta: {
+      // e.g. { commentText: "...", reelId: "...", preview: "..." }
+      type: Object,
+      default: {},
+    },
+
+    // human text (optional; you can also build it on the client)
     message: {
       type: String,
       default: "",
       trim: true,
     },
 
-    // 👁️ Seen or not
+    // read state
     seen: {
       type: Boolean,
       default: false,
+      index: true,
     },
   },
   {
-    timestamps: true,                // Adds createdAt and updatedAt
-    toJSON: { virtuals: true },      // Include virtuals in JSON output
-    toObject: { virtuals: true },    // Include virtuals in object output
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 
-// ✅ Indexing for performance
+// 🔎 Compound index for list screen performance (by newest first)
 notificationSchema.index({ userId: 1, seen: 1, createdAt: -1 });
 
-// ✅ Optional: Autopopulate plugin for testing (enable if needed)
-// const autopopulate = require('mongoose-autopopulate');
-// notificationSchema.plugin(autopopulate);
+// 🚫 Don’t store self-notifications (actor == receiver)
+notificationSchema.pre("save", function (next) {
+  if (this.userId?.toString() === this.fromUserId?.toString()) {
+    const err = new Error("Self notification prevented");
+    // silently skip by calling next(err) would throw; instead just stop save:
+    return next(err);
+  }
+  next();
+});
+
+// Small helper for consistent creation
+notificationSchema.statics.pushNotification = async function ({
+  userId,
+  fromUserId,
+  type,
+  postId = null,
+  message = "",
+  meta = {},
+}) {
+  if (!userId || !fromUserId || userId.toString() === fromUserId.toString()) return null;
+  return this.create({ userId, fromUserId, type, postId, message, meta });
+};
 
 module.exports = mongoose.model("Notification", notificationSchema);
+module.exports.NOTIFICATION_TYPES = NOTIFICATION_TYPES;
