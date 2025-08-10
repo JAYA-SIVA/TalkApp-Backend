@@ -1,47 +1,51 @@
+// routes/reelRoutes.js
 const express = require("express");
 const router = express.Router();
 
+// ✅ Controllers
 const {
   uploadReel,
   getAllReels,
+  getReelById,
+  getReelComments,
   likeReel,
   dislikeReel,
   commentReel,
-  deleteReel
-} = require("../controllers/reelController");
+  deleteReel,
+} = require("../controllers/reels");
 
-// 🔐 Middleware to authenticate user
-const authenticate = require("../middleware/authMiddleware");
+// 🔐 Auth middleware (keep this consistent across your app)
+const auth = require("../middleware/auth");
 
-// 📤 Middleware for handling video uploads (Cloudinary via multer)
+// 📦 Multer (Cloudinary) middleware
 const upload = require("../middleware/multer");
 
-// ──────────────────────────────
-// ✅ REEL ROUTES
-// ──────────────────────────────
+/* ─────────────────────────────────────────
+   REELS ROUTES  (mounted under /api/reels)
+   ───────────────────────────────────────── */
 
-// 🎥 Upload a new reel
-// POST /api/reels/upload
-router.post("/upload", authenticate, upload.single("reel"), uploadReel);
+// 🎥 Upload a new reel (multipart: field name "reel", plus "caption")
+router.post("/upload", auth, upload.single("reel"), uploadReel);
 
-// 📥 Get all reels
-// GET /api/reels
-router.get("/", getAllReels); // ✅ Make sure this matches app.js usage
+// 📥 Get all reels (public)
+router.get("/", getAllReels);
+
+// 💬 Get comments of a reel (public or protect if you prefer)
+router.get("/comments/:id", getReelComments);
+
+// 🆔 Get single reel (public)
+router.get("/:id", getReelById);
 
 // 👍 Like a reel
-// PUT /api/reels/like/:id
-router.put("/like/:id", authenticate, likeReel);
+router.put("/like/:id", auth, likeReel);
 
-// 👎 Dislike a reel
-// PUT /api/reels/dislike/:id
-router.put("/dislike/:id", authenticate, dislikeReel);
+// 👎 Unlike a reel
+router.put("/dislike/:id", auth, dislikeReel);
 
 // 💬 Comment on a reel
-// POST /api/reels/comment/:id
-router.post("/comment/:id", authenticate, commentReel);
+router.post("/comment/:id", auth, commentReel);
 
-// ❌ Delete a reel
-// DELETE /api/reels/:id
-router.delete("/:id", authenticate, deleteReel);
+// ❌ Delete a reel (owner only)
+router.delete("/:id", auth, deleteReel);
 
 module.exports = router;
