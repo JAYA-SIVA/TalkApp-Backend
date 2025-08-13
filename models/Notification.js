@@ -39,6 +39,7 @@ const notificationSchema = new Schema(
     },
 
     // related post for like/comment (nullable)
+    // (You currently store reel _id here too — that's okay; just avoid hardcoded populate)
     postId: {
       type: Schema.Types.ObjectId,
       ref: "Post",
@@ -118,7 +119,6 @@ notificationSchema.statics.pushNotification = async function ({
 }) {
   if (!userId || !fromUserId || !type) return null;
   if (userId.toString() === fromUserId.toString()) return null; // prevent self-notify
-
   return this.create({ userId, fromUserId, type, postId, message, meta });
 };
 
@@ -145,9 +145,9 @@ notificationSchema.statics.listForUser = function (userId, opts = {}) {
     .limit(Math.min(Number(limit) || 20, 100));
 
   if (populate) {
-    q = q
-      .populate("actor", "_id username profilePic")
-      .populate("postId", "_id mediaUrl caption");
+    q = q.populate("actor", "_id username profilePic");
+    // NOTE: Do not hardcode populate("postId") here because sometimes this holds a reel _id.
+    // If needed, populate target in the caller based on your own type/logic.
   }
 
   return q;
@@ -158,7 +158,9 @@ notificationSchema.statics.listForUser = function (userId, opts = {}) {
  * ids can be an array of ObjectIds/strings.
  */
 notificationSchema.statics.markSeen = function (userId, ids = []) {
-  if (!Array.isArray(ids) || !ids.length) return Promise.resolve({ acknowledged: true, modifiedCount: 0 });
+  if (!Array.isArray(ids) || !ids.length) {
+    return Promise.resolve({ acknowledged: true, modifiedCount: 0 });
+  }
   return this.updateMany(
     { userId, _id: { $in: ids } },
     { $set: { seen: true } }
