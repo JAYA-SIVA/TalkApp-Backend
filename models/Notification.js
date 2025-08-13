@@ -8,6 +8,7 @@ const NOTIFICATION_TYPES = [
   "unlike",
   "comment",
   "message",         // direct message
+  "post_upload",     // new: user uploaded a new post
 ];
 
 const { Schema } = mongoose;
