@@ -3,41 +3,7 @@ const mongoose = require("mongoose");
 const cloudinary = require("../config/cloudinary");
 const Reel = require("../models/reel");
 const User = require("../models/User");
-const Notification = require("../models/Notification");
-
-/* ─────────────────────────────────────────
-   🔔 Inline Notification helper
-   ───────────────────────────────────────── */
-async function createNotification({ userId, fromUserId, type, postId = null, message = "" }) {
-  try {
-    if (!userId || !fromUserId || !type) return;
-    if (String(userId) === String(fromUserId)) return;
-
-    const n = await Notification.create({
-      userId,
-      fromUserId,
-      type,          // "like" | "comment" | "follow" | "message"
-      postId,        // we store reel _id in postId for consistency
-      message,
-      seen: false,
-    });
-
-    // Realtime ping (optional)
-    if (global.io) {
-      global.io.to(String(userId)).emit("notification:new", {
-        _id: n._id,
-        type,
-        fromUserId,
-        postId,
-        message,
-        seen: false,
-        createdAt: n.createdAt,
-      });
-    }
-  } catch (e) {
-    console.error("reels notify error:", e.message);
-  }
-}
+const createNotification = require("../utils/createNotification"); // ← use shared helper
 
 /* ─────────────────────────────────────────
    Helpers
@@ -180,7 +146,7 @@ exports.likeReel = async (req, res) => {
         userId: reel.userId.toString(),
         fromUserId: actorId,
         type: "like",
-        postId: reel._id.toString(),
+        postId: reel._id.toString(), // storing reel _id under postId for now
         message: `${actor?.username || "Someone"} liked your reel`,
       });
     }
@@ -256,7 +222,7 @@ exports.commentReel = async (req, res) => {
         userId: reel.userId.toString(),
         fromUserId: actorId,
         type: "comment",
-        postId: reel._id.toString(),
+        postId: reel._id.toString(), // storing reel _id under postId for now
         message: `${actor?.username || "Someone"} commented on your reel`,
       });
     }
