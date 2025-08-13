@@ -1,3 +1,4 @@
+// models/Notification.js
 const mongoose = require("mongoose");
 
 const NOTIFICATION_TYPES = [
@@ -6,14 +7,16 @@ const NOTIFICATION_TYPES = [
   "like",
   "unlike",
   "comment",
-  "message"          // direct message
+  "message",         // direct message
 ];
 
-const notificationSchema = new mongoose.Schema(
+const { Schema } = mongoose;
+
+const notificationSchema = new Schema(
   {
     // receiver
     userId: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
       index: true,
@@ -21,7 +24,7 @@ const notificationSchema = new mongoose.Schema(
 
     // actor (who did the action)
     fromUserId: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
       index: true,
@@ -37,20 +40,20 @@ const notificationSchema = new mongoose.Schema(
 
     // related post for like/comment (nullable)
     postId: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "Post",
       default: null,
       index: true,
     },
 
-    // optional extra info (safe place for future-proof data)
+    // optional extra info (future-proof container)
+    // e.g. { commentText: "...", reelId: "...", preview: "..." }
     meta: {
-      // e.g. { commentText: "...", reelId: "...", preview: "..." }
       type: Object,
       default: {},
     },
 
-    // human text (optional; you can also build it on the client)
+    // optional human text (can also be built on client)
     message: {
       type: String,
       default: "",
@@ -71,20 +74,40 @@ const notificationSchema = new mongoose.Schema(
   }
 );
 
-// 🔎 Compound index for list screen performance (by newest first)
+/* ------------------------------- Indexes ------------------------------- */
+// Optimized listing for a recipient's inbox
 notificationSchema.index({ userId: 1, seen: 1, createdAt: -1 });
+// Useful when showing "recent activity you did"
+notificationSchema.index({ fromUserId: 1, createdAt: -1 });
+// Sometimes handy to filter by type for the user
+notificationSchema.index({ userId: 1, type: 1, createdAt: -1 });
 
-// 🚫 Don’t store self-notifications (actor == receiver)
-notificationSchema.pre("save", function (next) {
-  if (this.userId?.toString() === this.fromUserId?.toString()) {
-    const err = new Error("Self notification prevented");
-    // silently skip by calling next(err) would throw; instead just stop save:
-    return next(err);
-  }
-  next();
+/* ------------------------------ Virtuals ------------------------------ */
+// Convenient virtuals for populate (optional)
+notificationSchema.virtual("user", {
+  ref: "User",
+  localField: "userId",
+  foreignField: "_id",
+  justOne: true,
+});
+notificationSchema.virtual("actor", {
+  ref: "User",
+  localField: "fromUserId",
+  foreignField: "_id",
+  justOne: true,
+});
+notificationSchema.virtual("post", {
+  ref: "Post",
+  localField: "postId",
+  foreignField: "_id",
+  justOne: true,
 });
 
-// Small helper for consistent creation
+/* --------------------------- Static Helpers --------------------------- */
+/**
+ * Create a notification safely.
+ * Skips if missing ids or actor === recipient.
+ */
 notificationSchema.statics.pushNotification = async function ({
   userId,
   fromUserId,
@@ -93,9 +116,84 @@ notificationSchema.statics.pushNotification = async function ({
   message = "",
   meta = {},
 }) {
-  if (!userId || !fromUserId || userId.toString() === fromUserId.toString()) return null;
+  if (!userId || !fromUserId || !type) return null;
+  if (userId.toString() === fromUserId.toString()) return null; // prevent self-notify
+
   return this.create({ userId, fromUserId, type, postId, message, meta });
 };
 
-module.exports = mongoose.model("Notification", notificationSchema);
+/**
+ * List notifications for a user with simple pagination.
+ * opts: { seen, type, limit=20, skip=0, populate=false }
+ */
+notificationSchema.statics.listForUser = function (userId, opts = {}) {
+  const {
+    seen,
+    type,
+    limit = 20,
+    skip = 0,
+    populate = false,
+  } = opts;
+
+  const query = { userId };
+  if (typeof seen === "boolean") query.seen = seen;
+  if (type) query.type = type;
+
+  let q = this.find(query)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(Math.min(Number(limit) || 20, 100));
+
+  if (populate) {
+    q = q
+      .populate("actor", "_id username profilePic")
+      .populate("postId", "_id mediaUrl caption");
+  }
+
+  return q;
+};
+
+/**
+ * Mark a set of notifications as seen for a user.
+ * ids can be an array of ObjectIds/strings.
+ */
+notificationSchema.statics.markSeen = function (userId, ids = []) {
+  if (!Array.isArray(ids) || !ids.length) return Promise.resolve({ acknowledged: true, modifiedCount: 0 });
+  return this.updateMany(
+    { userId, _id: { $in: ids } },
+    { $set: { seen: true } }
+  );
+};
+
+/**
+ * Mark all notifications as seen for a user.
+ */
+notificationSchema.statics.markAllSeenForUser = function (userId) {
+  return this.updateMany({ userId, seen: false }, { $set: { seen: true } });
+};
+
+/**
+ * Delete notifications for a user (optionally by type / olderThan).
+ * opts: { type, olderThan: Date }
+ */
+notificationSchema.statics.clearForUser = function (userId, opts = {}) {
+  const { type, olderThan } = opts;
+  const query = { userId };
+  if (type) query.type = type;
+  if (olderThan instanceof Date) query.createdAt = { $lt: olderThan };
+  return this.deleteMany(query);
+};
+
+/* -------------------------- Instance Helper -------------------------- */
+notificationSchema.methods.markAsSeen = function () {
+  this.seen = true;
+  return this.save();
+};
+
+/* --------------------------- Model & Exports -------------------------- */
+const Notification =
+  mongoose.models.Notification ||
+  mongoose.model("Notification", notificationSchema);
+
+module.exports = Notification;
 module.exports.NOTIFICATION_TYPES = NOTIFICATION_TYPES;
