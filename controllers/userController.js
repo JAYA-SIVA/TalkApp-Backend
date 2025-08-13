@@ -3,8 +3,56 @@ const Post = require("../models/Post");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// 🔔 lightweight helper (as we discussed)
-const createNotification = require("../utils/createNotification");
+/* -------------------------- Inline Notifications -------------------------- */
+// We try to load the Notification model. If it isn't present, notifications
+// become a safe no-op so your deploy won't crash.
+let NotificationModel = null;
+try {
+  NotificationModel = require("../models/Notification");
+} catch (e) {
+  console.warn(
+    "[userController] ../models/Notification not found. Notifications will be skipped."
+  );
+}
+
+/**
+ * Inline createNotification (no utils/ file required)
+ * Accepts your current call shape:
+ *   createNotification({ userId, fromUserId, type, message, link? })
+ * Also supports aliases (recipientId/to and actorId/from).
+ */
+const createNotification = async (opts = {}) => {
+  if (!NotificationModel) return; // no-op if model not available
+
+  const {
+    // recipient (who receives)
+    userId, recipientId, to,
+    // actor (who triggered)
+    fromUserId, actorId, from,
+    type,
+    message = "",
+    link = "",
+  } = opts;
+
+  const recipient = userId || recipientId || to;
+  const actor = fromUserId || actorId || from;
+
+  if (!recipient || !actor || !type) return; // guard against bad input
+
+  try {
+    await NotificationModel.create({
+      user: recipient,
+      actor,
+      type,          // 'follow', 'follow_request', 'like', 'comment', 'message'
+      message,
+      link,
+      isRead: false,
+    });
+  } catch (err) {
+    console.error("[createNotification] error:", err.message);
+  }
+};
+/* ------------------------------------------------------------------------- */
 
 /* ----------------------------- Token helpers ----------------------------- */
 const generateTokens = (user) => {
@@ -254,7 +302,7 @@ const updateUserByUsername = async (req, res) => {
     }
 
     // email change
-    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+    if (email && email.toLowerCase() !== (user.email || "").toLowerCase()) {
       const existingEmail = await User.findOne({
         email: new RegExp(`^${email}$`, "i"),
       });
@@ -301,7 +349,7 @@ const updateUserProfileById = async (req, res) => {
       user.username = username;
     }
 
-    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+    if (email && email.toLowerCase() !== (user.email || "").toLowerCase()) {
       const exists = await User.findOne({
         email: new RegExp(`^${email}$`, "i"),
       });
@@ -375,7 +423,7 @@ const followUser = async (req, res) => {
         target.followRequests.push(currentId);
         await target.save();
 
-        // 🔔 notify target about follow request
+        // notify target about follow request
         try {
           await createNotification({
             userId: targetId,
@@ -399,7 +447,7 @@ const followUser = async (req, res) => {
 
     await Promise.all([target.save(), current.save()]);
 
-    // 🔔 notify target about new follower
+    // notify target about new follower
     try {
       await createNotification({
         userId: targetId,
@@ -435,7 +483,6 @@ const unfollowUser = async (req, res) => {
     target.followRequests = (target.followRequests || []).filter((id) => id.toString() !== currentId);
 
     await Promise.all([target.save(), current.save()]);
-    // (No notification for unfollow)
     res.json({ message: "Unfollowed successfully", status: "none" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -443,7 +490,6 @@ const unfollowUser = async (req, res) => {
 };
 
 /* ---------------------- Follow Requests (NEW) ---------------------- */
-// GET /api/user/requests  → list of users who requested to follow me
 const getMyFollowRequests = async (req, res) => {
   try {
     const me = await User.findById(req.user.id)
@@ -485,7 +531,7 @@ const acceptFollowRequest = async (req, res) => {
 
     await Promise.all([me.save(), requester.save()]);
 
-    // 🔔 notify requester that you accepted
+    // notify requester that you accepted
     try {
       await createNotification({
         userId: requesterId,
@@ -513,7 +559,6 @@ const rejectFollowRequest = async (req, res) => {
     me.followRequests = (me.followRequests || []).filter((id) => id.toString() !== requesterId);
     await me.save();
 
-    // (Optional) you could notify requester of rejection using a "message" type
     res.json({ message: "Request rejected" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -536,7 +581,6 @@ const cancelSentFollowRequest = async (req, res) => {
 };
 
 /* ----------------- Convenience populated lists (NEW) ----------------- */
-// GET /api/user/followers/list/:id
 const getFollowersForUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
@@ -556,7 +600,6 @@ const getFollowersForUser = async (req, res) => {
   }
 };
 
-// GET /api/user/following/list/:id
 const getFollowingForUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
