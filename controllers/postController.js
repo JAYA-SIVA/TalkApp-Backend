@@ -5,6 +5,36 @@ const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification"); // 🔔 helper
 
+/* ----------------------- helpers: notify followers on upload ----------------------- */
+async function notifyFollowersPostUpload(authorId, postId) {
+  try {
+    const me = await User.findById(authorId).select("username followers");
+    if (!me) return;
+
+    const followers = Array.isArray(me.followers) ? me.followers : [];
+    if (!followers.length) return;
+
+    await Promise.allSettled(
+      followers
+        .map((fid) => fid?.toString())
+        .filter(Boolean)
+        .filter((fid) => fid !== authorId.toString())
+        .map((fid) =>
+          createNotification({
+            userId: fid,
+            fromUserId: authorId.toString(),
+            type: "post_upload", // ✅ ensure added to NOTIFICATION_TYPES
+            postId: postId.toString(),
+            message: `${me.username} posted a new update`,
+            meta: { kind: "post" },
+          })
+        )
+    );
+  } catch (e) {
+    console.error("notify post_upload:", e.message);
+  }
+}
+
 /* ------------------------------- Create post ------------------------------ */
 exports.createPost = async (req, res) => {
   try {
@@ -19,7 +49,16 @@ exports.createPost = async (req, res) => {
       caption,
     });
 
-    res.status(201).json(post);
+    // 🔔 Notify all followers that I uploaded a post (non-blocking)
+    notifyFollowersPostUpload(req.user._id, post._id).catch(() => {});
+
+    // Return populated doc for convenience
+    const populated = await Post.findById(post._id)
+      .populate("userId", "username profilePic")
+      .populate("comments.userId", "username profilePic")
+      .populate("likes", "username profilePic");
+
+    res.status(201).json(populated || post);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
