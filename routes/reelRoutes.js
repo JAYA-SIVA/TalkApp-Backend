@@ -2,7 +2,40 @@
 const express = require("express");
 const router = express.Router();
 
-// ✅ Controllers
+// 🔐 Auth middleware
+const auth = require("../middleware/auth");
+
+// 📦 Multer (Cloudinary) middleware
+const upload = require("../middleware/multer");
+
+/* ─────────────────────────────────────────
+   ✅ Flex-safe controller import
+   Tries common filenames/casing so Render (Linux) won't 404
+   ───────────────────────────────────────── */
+let reels;
+{
+  const candidates = [
+    "../controllers/reels",
+    "../controllers/reelController",
+    "../controllers/Reels",
+    "../controllers/reel",
+  ];
+  for (const p of candidates) {
+    try {
+      // eslint-disable-next-line import/no-dynamic-require, global-require
+      reels = require(p);
+      break;
+    } catch (e) {
+      // keep trying
+    }
+  }
+  if (!reels) {
+    throw new Error(
+      "Cannot load reels controller. Tried: ../controllers/reels, ../controllers/reelController, ../controllers/Reels, ../controllers/reel"
+    );
+  }
+}
+
 const {
   uploadReel,
   getAllReels,
@@ -12,13 +45,7 @@ const {
   dislikeReel,
   commentReel,
   deleteReel,
-} = require("../controllers/reels");
-
-// 🔐 Auth middleware (keep this consistent across your app)
-const auth = require("../middleware/auth");
-
-// 📦 Multer (Cloudinary) middleware
-const upload = require("../middleware/multer");
+} = reels;
 
 /* ─────────────────────────────────────────
    REELS ROUTES  (mounted under /api/reels)
