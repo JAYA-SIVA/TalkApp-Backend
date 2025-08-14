@@ -1,3 +1,4 @@
+// controllers/userController.js
 const User = require("../models/User");
 const Post = require("../models/Post");
 const jwt = require("jsonwebtoken");
@@ -13,18 +14,16 @@ try {
 }
 
 /**
- * Create a notification using your model fields.
- * Accepts aliases but ALWAYS writes: userId, fromUserId, seen=false.
- * Usage (already present in this file):
- *   await createNotification({ userId: targetId, fromUserId: currentId, type: "follow_request", message: "..." });
+ * Create a notification with correct schema fields.
+ * Always writes: userId, fromUserId, seen=false.
  */
 const createNotification = async (opts = {}) => {
   if (!Notification) return; // no-op if model not available
 
   const {
-    // receiver (who gets it)
+    // receiver
     userId, recipientId, to,
-    // actor (who triggered it)
+    // actor
     fromUserId, actorId, from,
     type,
     message = "",
@@ -36,8 +35,10 @@ const createNotification = async (opts = {}) => {
   const actor = fromUserId || actorId || from;
 
   if (!receiver || !actor || !type) return;
+  if (String(receiver) === String(actor)) return; // no self-notify
 
   try {
+    // Prefer model static if available
     if (typeof Notification.pushNotification === "function") {
       await Notification.pushNotification({
         userId: receiver,
@@ -59,7 +60,7 @@ const createNotification = async (opts = {}) => {
       });
     }
 
-    // Emit Socket.IO event to receiver room (optional, safe)
+    // Emit to receiver room (Socket.IO)
     if (global.io) {
       global.io.to(String(receiver)).emit("new_notification", {
         userId: String(receiver),
@@ -312,7 +313,6 @@ const updateUserByUsername = async (req, res) => {
     });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // username change
     if (req.body.username && req.body.username.toLowerCase() !== user.username.toLowerCase()) {
       const existing = await User.findOne({
         username: new RegExp(`^${req.body.username}$`, "i"),
@@ -323,7 +323,6 @@ const updateUserByUsername = async (req, res) => {
       user.username = req.body.username;
     }
 
-    // email change
     if (email && email.toLowerCase() !== (user.email || "").toLowerCase()) {
       const existingEmail = await User.findOne({
         email: new RegExp(`^${email}$`, "i"),
@@ -445,7 +444,6 @@ const followUser = async (req, res) => {
         target.followRequests.push(currentId);
         await target.save();
 
-        // notify target about follow request
         try {
           await createNotification({
             userId: targetId,
@@ -469,7 +467,6 @@ const followUser = async (req, res) => {
 
     await Promise.all([target.save(), current.save()]);
 
-    // notify target about new follower
     try {
       await createNotification({
         userId: targetId,
@@ -553,7 +550,6 @@ const acceptFollowRequest = async (req, res) => {
 
     await Promise.all([me.save(), requester.save()]);
 
-    // notify requester that you accepted
     try {
       await createNotification({
         userId: requesterId,
@@ -587,7 +583,7 @@ const rejectFollowRequest = async (req, res) => {
   }
 };
 
-// DELETE /api/user/requests/cancel/:targetId   (I cancel the request I sent)
+// DELETE /api/user/requests/cancel/:targetId
 const cancelSentFollowRequest = async (req, res) => {
   try {
     const targetId = req.params.targetId;
@@ -608,7 +604,7 @@ const getFollowersForUser = async (req, res) => {
     const user = await User.findById(req.params.id)
       .select("followers")
       .populate("followers", "_id username profilePic bio");
-  if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const list = (user.followers || []).map((u) => ({
       _id: u._id,
