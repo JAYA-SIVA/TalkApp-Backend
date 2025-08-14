@@ -2,8 +2,8 @@
 const express = require("express");
 const router = express.Router();
 
-// ✅ Auth middleware (keep naming consistent across app)
-const auth = require("../middleware/auth");
+// ✅ Correct Auth middleware import
+const auth = require("../middleware/authMiddleware");
 
 // ✅ Controller actions
 const {
