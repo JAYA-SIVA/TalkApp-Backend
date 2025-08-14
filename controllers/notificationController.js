@@ -113,7 +113,8 @@ exports.getMyNotifications = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate("fromUserId", "username profilePic") // actor
+        // ✅ populate the virtual "actor" (backed by fromUserId)
+        .populate("actor", "username profilePic")
         // note: postId may hold a Reel id in some flows; populate will simply be null if not a Post
         .populate("postId", "_id images video caption type")
         .lean(),
