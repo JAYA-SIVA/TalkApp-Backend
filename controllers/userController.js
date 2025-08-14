@@ -4,50 +4,72 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
 /* -------------------------- Inline Notifications -------------------------- */
-// We try to load the Notification model. If it isn't present, notifications
-// become a safe no-op so your deploy won't crash.
-let NotificationModel = null;
+// Load Notification model; if missing, skip gracefully.
+let Notification = null;
 try {
-  NotificationModel = require("../models/Notification");
+  Notification = require("../models/Notification");
 } catch (e) {
-  console.warn(
-    "[userController] ../models/Notification not found. Notifications will be skipped."
-  );
+  console.warn("[userController] Notification model not found. Notifications will be skipped.");
 }
 
 /**
- * Inline createNotification (no utils/ file required)
- * Accepts your current call shape:
- *   createNotification({ userId, fromUserId, type, message, link? })
- * Also supports aliases (recipientId/to and actorId/from).
+ * Create a notification using your model fields.
+ * Accepts aliases but ALWAYS writes: userId, fromUserId, seen=false.
+ * Usage (already present in this file):
+ *   await createNotification({ userId: targetId, fromUserId: currentId, type: "follow_request", message: "..." });
  */
 const createNotification = async (opts = {}) => {
-  if (!NotificationModel) return; // no-op if model not available
+  if (!Notification) return; // no-op if model not available
 
   const {
-    // recipient (who receives)
+    // receiver (who gets it)
     userId, recipientId, to,
-    // actor (who triggered)
+    // actor (who triggered it)
     fromUserId, actorId, from,
     type,
     message = "",
-    link = "",
+    postId = null,
+    meta = {},
   } = opts;
 
-  const recipient = userId || recipientId || to;
+  const receiver = userId || recipientId || to;
   const actor = fromUserId || actorId || from;
 
-  if (!recipient || !actor || !type) return; // guard against bad input
+  if (!receiver || !actor || !type) return;
 
   try {
-    await NotificationModel.create({
-      user: recipient,
-      actor,
-      type,          // 'follow', 'follow_request', 'like', 'comment', 'message'
-      message,
-      link,
-      isRead: false,
-    });
+    if (typeof Notification.pushNotification === "function") {
+      await Notification.pushNotification({
+        userId: receiver,
+        fromUserId: actor,
+        type,
+        postId,
+        message,
+        meta,
+      });
+    } else {
+      await Notification.create({
+        userId: receiver,
+        fromUserId: actor,
+        type,
+        postId,
+        message,
+        meta,
+        seen: false,
+      });
+    }
+
+    // Emit Socket.IO event to receiver room (optional, safe)
+    if (global.io) {
+      global.io.to(String(receiver)).emit("new_notification", {
+        userId: String(receiver),
+        fromUserId: String(actor),
+        type,
+        postId,
+        message,
+        meta,
+      });
+    }
   } catch (err) {
     console.error("[createNotification] error:", err.message);
   }
@@ -586,7 +608,7 @@ const getFollowersForUser = async (req, res) => {
     const user = await User.findById(req.params.id)
       .select("followers")
       .populate("followers", "_id username profilePic bio");
-    if (!user) return res.status(404).json({ message: "User not found" });
+  if (!user) return res.status(404).json({ message: "User not found" });
 
     const list = (user.followers || []).map((u) => ({
       _id: u._id,
