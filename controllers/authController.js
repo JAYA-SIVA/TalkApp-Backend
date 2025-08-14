@@ -55,7 +55,12 @@ exports.registerUser = async (req, res) => {
 };
 
 /* -------------------------------- Login -------------------------------- */
-// Accepts either email or username in the `email` field for compatibility.
+/**
+ * Accepts either email or username in the `email` field for compatibility.
+ * Fixes bcrypt crash by:
+ *  - explicitly selecting password: .select("+password")
+ *  - guarding when password is missing/invalid
+ */
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body || {};
@@ -63,26 +68,31 @@ exports.loginUser = async (req, res) => {
       return res.status(400).json({ message: "Email/username and password are required." });
     }
 
-    const queryByEmail = { email: new RegExp(`^${email}$`, "i") };
-    const queryByUser  = { username: new RegExp(`^${email}$`, "i") };
+    const qEmail = { email: new RegExp(`^${email}$`, "i") };
+    const qUser  = { username: new RegExp(`^${email}$`, "i") };
 
-    let user = await User.findOne(queryByEmail);
-    if (!user) user = await User.findOne(queryByUser);
+    // Always select password explicitly in case schema ever hides it
+    let user = await User.findOne(qEmail).select("+password");
+    if (!user) user = await User.findOne(qUser).select("+password");
+
+    // Generic message avoids leaking which part failed
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
-    // Guard against bad/legacy hashes so bcrypt.compare doesn't throw
-    if (typeof user.password !== "string" || user.password.length < 10) {
-      return res.status(400).json({ message: "This account has no valid password. Please reset your password." });
+    // Guard: if legacy/malformed doc has no password, do not call bcrypt
+    if (typeof user.password !== "string" || user.password.length < 20) {
+      return res.status(400).json({
+        message: "This account has no valid password. Please reset your password."
+      });
     }
 
-    let isMatch = false;
+    let ok = false;
     try {
-      isMatch = await bcrypt.compare(password, user.password);
+      ok = await bcrypt.compare(password, user.password);
     } catch (e) {
       console.error("bcrypt.compare error:", e.message);
       return res.status(400).json({ message: "Invalid credentials" });
     }
-    if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
+    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
 
     const tokens = generateTokens(user);
     refreshTokens.push(tokens.refreshToken);
