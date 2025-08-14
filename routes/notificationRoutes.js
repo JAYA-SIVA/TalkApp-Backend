@@ -2,10 +2,10 @@
 const express = require("express");
 const router = express.Router();
 
-// ✅ Correct Auth middleware import
+// ✅ Use the correct auth middleware everywhere
 const auth = require("../middleware/authMiddleware");
 
-// ✅ Controller actions
+// Controllers
 const {
   createNotification,
   getMyNotifications,
@@ -15,44 +15,40 @@ const {
   remove,
 } = require("../controllers/notificationController");
 
-/* ─────────────────────────────────────────
-   NOTIFICATION ROUTES (mounted at /api/notifications)
-   ───────────────────────────────────────── */
-
 /**
  * POST /api/notifications
  * Body: { userId, fromUserId?, type, postId?, message?, meta? }
- * Creates a notification and emits via Socket.IO.
+ * Create a notification (also emits via Socket.IO).
  */
 router.post("/", auth, createNotification);
 
 /**
  * GET /api/notifications?page=&limit=
- * Returns current user's notifications (uses req.user.id).
+ * List current user's notifications.
  */
 router.get("/", auth, getMyNotifications);
 
 /**
  * GET /api/notifications/unread-count
- * Returns { unreadCount } for the current user.
+ * Get unread notifications count.
  */
 router.get("/unread-count", auth, getUnreadCount);
 
 /**
  * PUT /api/notifications/read/:id
- * Marks a single notification as read (if it belongs to the current user).
+ * Mark a single notification as read.
  */
 router.put("/read/:id", auth, markRead);
 
 /**
  * PUT /api/notifications/read-all
- * Marks all notifications as read for the current user.
+ * Mark all notifications as read.
  */
 router.put("/read-all", auth, markAllRead);
 
 /**
  * DELETE /api/notifications/:id
- * Deletes one notification (only if it belongs to current user).
+ * Delete a notification.
  */
 router.delete("/:id", auth, remove);
 
