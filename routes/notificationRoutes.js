@@ -2,10 +2,10 @@
 const express = require("express");
 const router = express.Router();
 
-// Auth middleware (same one you use for user routes)
-const protect = require("../middleware/authMiddleware");
+// ✅ Auth middleware (keep naming consistent across app)
+const auth = require("../middleware/auth");
 
-// Controller actions
+// ✅ Controller actions
 const {
   createNotification,
   getMyNotifications,
@@ -15,41 +15,45 @@ const {
   remove,
 } = require("../controllers/notificationController");
 
+/* ─────────────────────────────────────────
+   NOTIFICATION ROUTES (mounted at /api/notifications)
+   ───────────────────────────────────────── */
+
 /**
  * POST /api/notifications
  * Body: { userId, fromUserId?, type, postId?, message?, meta? }
- * Creates a notification.
+ * Creates a notification and emits via Socket.IO.
  */
-router.post("/", protect, createNotification);
+router.post("/", auth, createNotification);
 
 /**
  * GET /api/notifications?page=&limit=
  * Returns current user's notifications (uses req.user.id).
  */
-router.get("/", protect, getMyNotifications);
+router.get("/", auth, getMyNotifications);
 
 /**
  * GET /api/notifications/unread-count
  * Returns { unreadCount } for the current user.
  */
-router.get("/unread-count", protect, getUnreadCount);
+router.get("/unread-count", auth, getUnreadCount);
 
 /**
  * PUT /api/notifications/read/:id
- * Marks a single notification as read (only if it belongs to current user).
+ * Marks a single notification as read (if it belongs to the current user).
  */
-router.put("/read/:id", protect, markRead);
+router.put("/read/:id", auth, markRead);
 
 /**
  * PUT /api/notifications/read-all
- * Marks all notifications as read for current user.
+ * Marks all notifications as read for the current user.
  */
-router.put("/read-all", protect, markAllRead);
+router.put("/read-all", auth, markAllRead);
 
 /**
  * DELETE /api/notifications/:id
  * Deletes one notification (only if it belongs to current user).
  */
-router.delete("/:id", protect, remove);
+router.delete("/:id", auth, remove);
 
 module.exports = router;
