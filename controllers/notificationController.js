@@ -1,11 +1,12 @@
 // controllers/notificationController.js
 const mongoose = require("mongoose");
 const Notification = require("../models/Notification");
+const createNotificationHelper = require("../utils/createNotification"); // emits + saves
 
 const { Types } = mongoose;
 const isValidId = (id) => Types.ObjectId.isValid(id);
 
-// Allowed types (keep in sync with model)
+// Keep in sync with models/Notification.js
 const ALLOWED_TYPES = new Set([
   "follow",
   "follow_request",
@@ -13,6 +14,7 @@ const ALLOWED_TYPES = new Set([
   "unlike",
   "comment",
   "message",
+  "post_upload", // ✅ new
 ]);
 
 /* ------------------------------ helpers ------------------------------ */
@@ -30,6 +32,8 @@ function buildAutoMessage(type, actorUsername) {
       return `${actorUsername} commented on your post`;
     case "message":
       return `${actorUsername} sent you a message`;
+    case "post_upload":
+      return `${actorUsername} posted a new update`;
     default:
       return "";
   }
@@ -40,6 +44,7 @@ function buildAutoMessage(type, actorUsername) {
  * Body: { userId, fromUserId?, type, postId?, message?, meta? }
  * - userId: receiver (required)
  * - fromUserId: actor; defaults to req.user.id
+ * Uses the shared helper so it also emits over Socket.IO.
  */
 exports.createNotification = async (req, res) => {
   try {
@@ -52,7 +57,7 @@ exports.createNotification = async (req, res) => {
       meta = {},
     } = req.body;
 
-    const actorId = fromRaw || (req.user && req.user.id);
+    const actorId = fromRaw || (req.user && (req.user.id || req.user._id));
 
     if (!userId || !actorId || !type) {
       return res
@@ -62,28 +67,28 @@ exports.createNotification = async (req, res) => {
     if (!isValidId(userId)) return res.status(400).json({ message: "Invalid userId" });
     if (!isValidId(actorId)) return res.status(400).json({ message: "Invalid fromUserId" });
     if (!ALLOWED_TYPES.has(type)) return res.status(400).json({ message: "Invalid type" });
-    if (userId === actorId) return res.status(400).json({ message: "Cannot notify yourself" });
-
-    const payload = {
-      userId,
-      fromUserId: actorId,
-      type,
-      seen: false,
-      meta,
-    };
-
-    if (postId) {
-      if (!isValidId(postId)) return res.status(400).json({ message: "Invalid postId" });
-      payload.postId = postId;
+    if (String(userId) === String(actorId)) {
+      return res.status(400).json({ message: "Cannot notify yourself" });
     }
 
-    // optional human message (auto-generate if not provided)
-    payload.message =
+    if (postId && !isValidId(postId)) {
+      return res.status(400).json({ message: "Invalid postId" });
+    }
+
+    const finalMessage =
       typeof message === "string" && message.trim()
         ? message.trim()
         : buildAutoMessage(type, req.user?.username || "Someone");
 
-    const doc = await Notification.create(payload);
+    const doc = await createNotificationHelper({
+      userId,
+      fromUserId: actorId,
+      type,
+      postId: postId || null,
+      message: finalMessage,
+      meta,
+    });
+
     return res.status(201).json(doc);
   } catch (err) {
     console.error("createNotification error:", err);
@@ -98,7 +103,7 @@ exports.createNotification = async (req, res) => {
  */
 exports.getMyNotifications = async (req, res) => {
   try {
-    const me = req.user.id;
+    const me = req.user.id || req.user._id;
     const page = Math.max(parseInt(req.query.page || "1", 10), 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit || "30", 10), 1), 100);
     const skip = (page - 1) * limit;
@@ -108,8 +113,9 @@ exports.getMyNotifications = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate("fromUserId", "username profilePic")
-        .populate("postId", "mediaUrl images type") // adjust to your Post fields
+        .populate("fromUserId", "username profilePic") // actor
+        // note: postId may hold a Reel id in some flows; populate will simply be null if not a Post
+        .populate("postId", "_id images video caption type")
         .lean(),
       Notification.countDocuments({ userId: me }),
       Notification.countDocuments({ userId: me, seen: false }),
@@ -132,7 +138,7 @@ exports.getMyNotifications = async (req, res) => {
 /* ----------------------- unread count (GET) --------------------------- */
 exports.getUnreadCount = async (req, res) => {
   try {
-    const me = req.user.id;
+    const me = req.user.id || req.user._id;
     const unreadCount = await Notification.countDocuments({ userId: me, seen: false });
     res.json({ unreadCount });
   } catch (err) {
@@ -144,7 +150,7 @@ exports.getUnreadCount = async (req, res) => {
 /* ---------------------- mark ONE read (PUT) --------------------------- */
 exports.markRead = async (req, res) => {
   try {
-    const me = req.user.id;
+    const me = req.user.id || req.user._id;
     const { id } = req.params;
     if (!isValidId(id)) return res.status(400).json({ message: "Invalid notification id" });
 
@@ -165,7 +171,7 @@ exports.markRead = async (req, res) => {
 /* -------------------- mark ALL read (PUT) ----------------------------- */
 exports.markAllRead = async (req, res) => {
   try {
-    const me = req.user.id;
+    const me = req.user.id || req.user._id;
     const result = await Notification.updateMany(
       { userId: me, seen: false },
       { $set: { seen: true } }
@@ -180,7 +186,7 @@ exports.markAllRead = async (req, res) => {
 /* --------------------------- delete (DELETE) -------------------------- */
 exports.remove = async (req, res) => {
   try {
-    const me = req.user.id;
+    const me = req.user.id || req.user._id;
     const { id } = req.params;
     if (!isValidId(id)) return res.status(400).json({ message: "Invalid notification id" });
 
