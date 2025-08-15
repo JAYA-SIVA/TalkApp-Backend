@@ -4,7 +4,7 @@ const Otp = require("../models/Otp");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
-// ⚠️ In-memory store for refresh tokens (replace with DB/Redis in production)
+// (Optional) In-memory store for logout best-effort; not required for refresh
 let refreshTokens = [];
 
 /* -------------------------- Token helpers -------------------------- */
@@ -29,7 +29,7 @@ const sanitizeUser = (u) => {
 /* ------------------------------ Register ------------------------------ */
 /**
  * Requires a previously verified REGISTER OTP:
- * OTP doc must exist with { email, purpose:'register', consumed:true }.
+ * must exist with { email, purpose:'register', consumed:true }.
  */
 exports.registerUser = async (req, res) => {
   try {
@@ -40,7 +40,7 @@ exports.registerUser = async (req, res) => {
 
     const emailLower = String(email).toLowerCase().trim();
 
-    // Reject if already taken (case-insensitive)
+    // Uniqueness (case-insensitive)
     const [emailTaken, usernameTaken] = await Promise.all([
       User.findOne({ email: new RegExp(`^${emailLower}$`, "i") }).lean(),
       User.findOne({ username: new RegExp(`^${username}$`, "i") }).lean(),
@@ -48,7 +48,7 @@ exports.registerUser = async (req, res) => {
     if (emailTaken)    return res.status(400).json({ success: false, message: "Email already registered" });
     if (usernameTaken) return res.status(400).json({ success: false, message: "Username already taken" });
 
-    // ✅ Require a consumed register OTP
+    // ✅ Must have consumed register OTP
     const verified = await Otp.findOne({
       email: emailLower,
       purpose: "register",
@@ -69,22 +69,26 @@ exports.registerUser = async (req, res) => {
       email: emailLower,
       password: hashedPassword,
       profilePic: profilePic || undefined,
-      // emailVerified: true, // uncomment if your schema has this field
+      // emailVerified: true, // uncomment if your schema has this
     });
 
     // Invalidate any register OTPs for this email
     await Otp.deleteMany({ email: emailLower, purpose: "register" });
 
-    // Tokens
     const tokens = generateTokens(newUser);
     refreshTokens.push(tokens.refreshToken);
 
+    const safe = sanitizeUser(newUser);
     return res.status(201).json({
       success: true,
       message: "Registered successfully",
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
-      user: sanitizeUser(newUser),
+      user: safe,
+      // top-level fields for Android backward-compat:
+      _id: safe._id,
+      username: safe.username,
+      email: safe.email,
     });
   } catch (err) {
     console.error("Registration error:", err);
@@ -111,7 +115,7 @@ exports.loginUser = async (req, res) => {
     if (!user) user = await User.findOne(qUser).select("+password");
     if (!user) return res.status(400).json({ success: false, message: "Invalid credentials" });
 
-    // Guard malformed docs that might not have a proper hash
+    // Guard malformed docs
     if (typeof user.password !== "string" || user.password.length < 20) {
       return res.status(400).json({
         success: false,
@@ -131,12 +135,17 @@ exports.loginUser = async (req, res) => {
     const tokens = generateTokens(user);
     refreshTokens.push(tokens.refreshToken);
 
+    const safe = sanitizeUser(user);
     return res.status(200).json({
       success: true,
       message: "Logged in",
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
-      user: sanitizeUser(user),
+      user: safe,
+      // top-level fields for Android backward-compat:
+      _id: safe._id,
+      username: safe.username,
+      email: safe.email,
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -148,30 +157,48 @@ exports.loginUser = async (req, res) => {
 /**
  * Accepts body.refreshToken OR body.token OR header x-refresh-token
  * Responds with { success, accessToken }
+ * NOTE: Stateless — no in-memory list check, survives server restarts.
  */
-exports.refreshToken = (req, res) => {
-  const token =
-    req.body?.refreshToken ||
-    req.body?.token ||
-    req.headers["x-refresh-token"];
+exports.refreshToken = async (req, res) => {
+  try {
+    const token =
+      req.body?.refreshToken ||
+      req.body?.token ||
+      req.headers["x-refresh-token"];
 
-  if (!token) return res.status(401).json({ success: false, message: "Refresh token required" });
-  if (!refreshTokens.includes(token)) return res.status(403).json({ success: false, message: "Invalid refresh token" });
+    if (!token) {
+      return res.status(401).json({ success: false, message: "Refresh token required" });
+    }
 
-  jwt.verify(token, REFRESH_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ success: false, message: "Token expired or invalid" });
+    jwt.verify(token, REFRESH_SECRET, async (err, decoded) => {
+      if (err) {
+        return res.status(403).json({ success: false, message: "Token expired or invalid" });
+      }
 
-    const accessToken = jwt.sign(
-      { id: decoded.id, username: decoded.username },
-      ACCESS_SECRET,
-      { expiresIn: ACCESS_TTL }
-    );
-    return res.status(200).json({ success: true, accessToken });
-  });
+      // Optional: ensure the user still exists
+      const user = await User.findById(decoded.id).lean();
+      if (!user) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
+
+      const accessToken = jwt.sign(
+        { id: user._id, username: user.username },
+        ACCESS_SECRET,
+        { expiresIn: ACCESS_TTL }
+      );
+
+      return res.status(200).json({ success: true, accessToken });
+    });
+  } catch (e) {
+    console.error("Refresh error:", e);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
 };
 
 /* -------------------------------- Logout -------------------------------- */
 exports.logout = (req, res) => {
+  // Stateless APIs typically don't store refresh tokens server-side.
+  // We keep best-effort removal from the in-memory list (if used elsewhere).
   const token = req.body?.refreshToken || req.body?.token;
   if (!token) return res.status(400).json({ success: false, message: "Refresh token missing" });
   refreshTokens = refreshTokens.filter((t) => t !== token);
