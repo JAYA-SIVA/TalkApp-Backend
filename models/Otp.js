@@ -1,28 +1,50 @@
 // models/Otp.js
-
 const mongoose = require("mongoose");
 
-// OTP Schema
-const otpSchema = new mongoose.Schema({
-  email: {
-    type: String,
-    required: true,
-    lowercase: true, // optional: normalize email
-    trim: true
+const OtpSchema = new mongoose.Schema(
+  {
+    email: {
+      type: String,
+      required: true,
+      lowercase: true,
+      trim: true,
+      index: true,
+    },
+    otp: {
+      type: String,
+      required: true,
+    },
+    // NEW: differentiate flows
+    purpose: {
+      type: String,
+      enum: ["register", "forgot"],
+      required: true,
+      index: true,
+    },
+    // NEW: mark an OTP as used
+    consumed: {
+      type: Boolean,
+      default: false,
+    },
+    // Limit brute-force
+    attempts: {
+      type: Number,
+      default: 0,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+    // NEW: explicit expiry moment; controller sets e.g. now + 10 minutes
+    expiresAt: {
+      type: Date,
+      required: true,
+    },
   },
-  otp: {
-    type: String,
-    required: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-    expires: 300 // 🔐 TTL: Automatically deletes document after 5 mins (300 seconds)
-  },
-  attempts: {
-    type: Number,
-    default: 0 // Used to block brute-force
-  }
-});
+  { timestamps: false }
+);
 
-module.exports = mongoose.model("Otp", otpSchema);
+// TTL on expiresAt (auto-delete after it passes)
+OtpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+module.exports = mongoose.model("Otp", OtpSchema);
