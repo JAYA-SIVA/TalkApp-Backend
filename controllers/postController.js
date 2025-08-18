@@ -1,17 +1,16 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
-const Reel = require("../models/reel"); // <-- lowercase to match models/reel.js
+const Reel = require("../models/reel"); // match models/reel.js
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification");
 const crypto = require("crypto");
 
-/* ----------------------- helpers: notify followers on upload ----------------------- */
+/* ---------------- notify followers on upload ---------------- */
 async function notifyFollowersPostUpload(authorId, postId) {
   try {
     const me = await User.findById(authorId).select("username followers");
     if (!me) return;
-
     const followers = Array.isArray(me.followers) ? me.followers : [];
     if (!followers.length) return;
 
@@ -36,7 +35,7 @@ async function notifyFollowersPostUpload(authorId, postId) {
   }
 }
 
-/* ------------------------------- Create post ------------------------------ */
+/* ---------------- create post ---------------- */
 exports.createPost = async (req, res) => {
   try {
     const { type, text, images, video, caption } = req.body;
@@ -58,40 +57,39 @@ exports.createPost = async (req, res) => {
   }
 };
 
-/* ----------------------------- Shuffle Helpers ---------------------------- */
+/* ---------------- shuffle helpers ---------------- */
 function timeDecay(ageHours, tau = 20) {
   return Math.exp(-ageHours / tau);
 }
-// per-request seed so every reload reshuffles
+// per-request seed so every reload reshuffles (or pass ?seed=foo to stabilize)
 function jitter(seed, itemId, delta = 0.12) {
   const h = crypto.createHash("sha1").update(`${seed}|${itemId}`).digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
   return (u * 2 - 1) * delta; // [-delta, +delta]
 }
 
-/* ------------- Global feed: Posts + Reels (ARRAY, old response shape) ------------- */
+/* ====== Global feed: Posts + Reels (ARRAY, soft follow boost, reshuffle) ====== */
 exports.getAllPosts = async (req, res) => {
   try {
-    // every request gets a fresh seed → new order on reload
     const shuffleSeed = (req.query.seed || Date.now().toString());
 
-    // pagination (headers only; body stays an ARRAY)
+    // pagination (headers only; body stays ARRAY)
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // who the viewer follows → they should appear first
+    // following set for viewer
     const me = await User.findById(req.user._id).select("following");
     const followingSet = new Set((me?.following || []).map((id) => id.toString()));
 
-    // POSTS: populate userId + comments.userId (OLD SHAPE), DO NOT populate likes
+    // POSTS: populate user & comment users; keep likes as ids
     const posts = await Post.find()
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
       .lean();
 
-    // REELS: populate userId + comments.userId; keep likes as IDs; normalize fields to look like posts
+    // REELS: same populate; normalize to post shape
     const reelsRaw = await Reel.find()
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
@@ -99,35 +97,34 @@ exports.getAllPosts = async (req, res) => {
 
     const reels = reelsRaw.map((r) => ({
       _id: r._id,
-      userId: r.userId,            // populated object (matches posts)
+      userId: r.userId,            // populated
       type: "reel",
       text: "",
       caption: r.caption || "",
       images: [],
-      video: r.videoUrl || "",     // use 'video' key to match posts
-      likes: r.likes || [],        // array of ObjectId (serialized as strings)
+      video: r.videoUrl || "",
+      likes: r.likes || [],        // array of ids
       comments: (r.comments || []).map((c) => ({
-        userId: c.userId,          // populated object (matches posts)
-        comment: c.text,           // rename
+        userId: c.userId,          // populated
+        comment: c.text,
         createdAt: c.createdAt,
       })),
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
 
-    // combine into one list (keep Android-friendly shape)
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
-        userId: p.userId,          // populated object (old shape)
+        userId: p.userId,          // populated
         type: p.type || "post",
         text: p.text || "",
         caption: p.caption || "",
         images: Array.isArray(p.images) ? p.images : [],
         video: p.video || "",
-        likes: p.likes || [],      // IDs only (old shape)
+        likes: p.likes || [],      // ids
         comments: (p.comments || []).map((c) => ({
-          userId: c.userId,        // populated object (old shape)
+          userId: c.userId,        // populated
           comment: c.comment,
           createdAt: c.createdAt,
         })),
@@ -137,41 +134,38 @@ exports.getAllPosts = async (req, res) => {
       ...reels,
     ];
 
-    // score: followed-first + recency + engagement + jitter (reshuffles each reload)
+    // SOFT follow boost (time-limited) + recency + engagement + jitter
     const scored = combined.map((item) => {
       const authorId = item.userId?._id?.toString?.() || item.userId?.toString?.() || "";
       const isFollowed = followingSet.has(authorId);
       const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
+
       const recency = timeDecay(ageHours); // 0..1
       const engagement =
         Math.min((item.likes?.length || 0) / 50, 1) * 0.5 +
         Math.min((item.comments?.length || 0) / 20, 1) * 0.8;
-      const followBoost = isFollowed ? 1.2 : 0; // big push for followed
-      const rand = jitter(shuffleSeed, item._id.toString(), 0.12);
+
+      // follow boost only for fresh content (first 2h), then decays quickly
+      const freshWindowHrs = 2;
+      const freshFactor = Math.max(0, 1 - ageHours / freshWindowHrs); // 1..0 over 2h
+      const followBoost = isFollowed ? 0.6 * freshFactor : 0; // soft, time-limited
+
+      const rand = jitter(shuffleSeed, item._id.toString(), 0.15); // stronger jitter so reload reorders
+
       return { ...item, __score: followBoost + recency * 0.5 + engagement * 0.3 + rand };
     });
 
     // sort by score (higher first)
     scored.sort((a, b) => b.__score - a.__score);
 
-    // ensure followed items are at the very start (hard partition)
-    const followed = [];
-    const others = [];
-    for (const it of scored) {
-      const authorId = it.userId?._id?.toString?.() || it.userId?.toString?.() || "";
-      (followingSet.has(authorId) ? followed : others).push(it);
-    }
-    const ordered = [...followed, ...others].map(({ __score, ...rest }) => rest);
-
     // paginate
-    const slice = ordered.slice(start, end);
+    const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
 
-    // pagination + seed in headers; BODY is ARRAY (Android expects BEGIN_ARRAY)
     res.set({
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
-      "X-Feed-Total": String(ordered.length),
-      "X-Feed-Has-Next": String(end < ordered.length),
+      "X-Feed-Total": String(scored.length),
+      "X-Feed-Has-Next": String(end < scored.length),
       "X-Feed-Seed": shuffleSeed,
     });
 
@@ -182,7 +176,83 @@ exports.getAllPosts = async (req, res) => {
   }
 };
 
-/* ------ Profile feed: Posts + Reels by user (ARRAY, old response shape) ------ */
+/* ====== Reels-only feed: shuffled (ARRAY, mirrors post shape for frontend) ====== */
+exports.getReelsFeed = async (req, res) => {
+  try {
+    const shuffleSeed = (req.query.seed || Date.now().toString());
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+
+    // following set for viewer (soft boost)
+    const me = await User.findById(req.user._id).select("following");
+    const followingSet = new Set((me?.following || []).map((id) => id.toString()));
+
+    const reelsRaw = await Reel.find()
+      .populate("userId", "username profilePic")
+      .populate("comments.userId", "username profilePic")
+      .lean();
+
+    const items = reelsRaw.map((r) => ({
+      _id: r._id,
+      userId: r.userId,            // populated
+      type: "reel",
+      text: "",
+      caption: r.caption || "",
+      images: [],
+      video: r.videoUrl || "",
+      likes: r.likes || [],
+      comments: (r.comments || []).map((c) => ({
+        userId: c.userId,          // populated
+        comment: c.text,
+        createdAt: c.createdAt,
+      })),
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
+
+    // same scoring as home feed
+    const scored = items.map((item) => {
+      const authorId = item.userId?._id?.toString?.() || item.userId?.toString?.() || "";
+      const isFollowed = followingSet.has(authorId);
+      const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
+
+      const recency = timeDecay(ageHours);
+      const engagement =
+        Math.min((item.likes?.length || 0) / 50, 1) * 0.5 +
+        Math.min((item.comments?.length || 0) / 20, 1) * 0.8;
+
+      const freshWindowHrs = 2;
+      const freshFactor = Math.max(0, 1 - ageHours / freshWindowHrs);
+      const followBoost = isFollowed ? 0.6 * freshFactor : 0;
+
+      const rand = jitter(shuffleSeed, item._id.toString(), 0.15);
+
+      return { ...item, __score: followBoost + recency * 0.5 + engagement * 0.3 + rand };
+    });
+
+    scored.sort((a, b) => b.__score - a.__score);
+
+    const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
+
+    res.set({
+      "X-Feed-Page": String(page),
+      "X-Feed-Limit": String(limit),
+      "X-Feed-Total": String(scored.length),
+      "X-Feed-Has-Next": String(end < scored.length),
+      "X-Feed-Seed": shuffleSeed,
+    });
+
+    return res.json(slice);
+  } catch (err) {
+    console.error("getReelsFeed error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ------ Profile feed: Posts + Reels by user (ARRAY, newest first) ------ */
 exports.getPostsByUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -244,7 +314,6 @@ exports.getPostsByUser = async (req, res) => {
       ...reels,
     ];
 
-    // profile view = newest first
     combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     const slice = combined.slice(start, end);
 
