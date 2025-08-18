@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
-const Reel = require("../models/reel");             // <-- lowercase to match models/reel.js
+const Reel = require("../models/reel"); // lowercase to match models/reel.js
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification");
@@ -65,24 +65,21 @@ exports.createPost = async (req, res) => {
 };
 
 /* ----------------------------- Shuffle Helpers ---------------------------- */
-function timeDecay(ageHours, tau = 20) {
-  return Math.exp(-ageHours / tau);
-}
-
+function timeDecay(ageHours, tau = 20) { return Math.exp(-ageHours / tau); }
 function jitter(userId, itemId, bucketISO, delta = 0.05) {
   const h = crypto.createHash("sha1").update(`${userId}|${itemId}|${bucketISO}`).digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
   return (u * 2 - 1) * delta;
 }
 
-/* -------------------------------- Get all (merged Posts + Reels, shuffled, paginated) -------------------------------- */
+/* ------------------ Global feed: Posts + Reels (returns ARRAY) ------------------ */
 exports.getAllPosts = async (req, res) => {
   try {
     const userId = req.user?._id?.toString() || "anon";
     const bucketMs = 3 * 3600 * 1000;
     const bucketISO = new Date(Math.floor(Date.now() / bucketMs) * bucketMs).toISOString();
 
-    // Pagination
+    // Pagination params (still used server-side; client receives headers)
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const start = (page - 1) * limit;
@@ -95,24 +92,22 @@ exports.getAllPosts = async (req, res) => {
       .populate("likes", "username profilePic")
       .lean();
 
-    // Reels (NOTE: populate comments.userId to match your schema)
+    // Reels (populate comments.userId to match schema we’re using everywhere)
     const reels = await Reel.find()
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
       .populate("likes", "username profilePic")
       .lean();
 
-    // Normalize + keep legacy fields for frontend compatibility
+    // Normalize + keep legacy fields (images/video) for frontend compatibility
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
-        userId: p.userId,                  // populated author
+        userId: p.userId,
         type: p.type || "post",
         caption: p.caption || p.text || "",
-        // legacy fields (keep for existing frontend)
         images: p.images || [],
         video: p.video || "",
-        // normalized
         media: { images: p.images || [], video: p.video || "" },
         likes: p.likes || [],
         comments: p.comments || [],
@@ -121,13 +116,11 @@ exports.getAllPosts = async (req, res) => {
       })),
       ...reels.map((r) => ({
         _id: r._id,
-        userId: r.userId,                  // populated author
+        userId: r.userId,
         type: "reel",
         caption: r.caption || "",
-        // legacy fields for reels
         images: [],
         video: r.videoUrl || "",
-        // normalized
         media: { images: [], video: r.videoUrl || "" },
         likes: r.likes || [],
         comments: r.comments || [],
@@ -136,7 +129,7 @@ exports.getAllPosts = async (req, res) => {
       })),
     ];
 
-    // Score
+    // Score (recency + engagement) + deterministic jitter
     const scored = combined.map((item) => {
       const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
       const recency = timeDecay(ageHours);
@@ -148,38 +141,37 @@ exports.getAllPosts = async (req, res) => {
       return { ...item, baseScore: base + jit };
     });
 
-    // Sort by score
     scored.sort((a, b) => b.baseScore - a.baseScore);
 
-    // Diversify (max 2 per author)
+    // Diversify per author (max 2 in the page batch)
     const cap = new Map();
     const diversified = [];
     for (const item of scored) {
       const a = item.userId?._id?.toString?.() || item.userId?.toString?.() || "unknown";
       const c = cap.get(a) || 0;
-      if (c < 2) {
-        diversified.push(item);
-        cap.set(a, c + 1);
-      }
+      if (c < 2) { diversified.push(item); cap.set(a, c + 1); }
     }
 
-    // Paginate
-    const paginated = diversified.slice(start, end);
+    // Slice page
+    const slice = diversified.slice(start, end);
 
-    res.json({
-      page,
-      limit,
-      total: diversified.length,
-      hasNext: end < diversified.length,
-      items: paginated,
+    // Send pagination via headers; body is ARRAY
+    res.set({
+      "X-Feed-Page": String(page),
+      "X-Feed-Limit": String(limit),
+      "X-Feed-Total": String(diversified.length),
+      "X-Feed-Has-Next": String(end < diversified.length),
+      "X-Feed-Bucket": bucketISO,
     });
+
+    return res.json(slice); // <-- ARRAY to satisfy your Android parser
   } catch (err) {
     console.error("getAllPosts feed error:", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-/* ------------------------- Profile feed: Posts + Reels by user (paginated) -------------------------- */
+/* -------- Profile feed: Posts + Reels by user (returns ARRAY, newest first) -------- */
 exports.getPostsByUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -234,15 +226,16 @@ exports.getPostsByUser = async (req, res) => {
     ];
 
     combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    const paginated = combined.slice(start, end);
+    const slice = combined.slice(start, end);
 
-    res.json({
-      page,
-      limit,
-      total: combined.length,
-      hasNext: end < combined.length,
-      items: paginated,
+    res.set({
+      "X-Feed-Page": String(page),
+      "X-Feed-Limit": String(limit),
+      "X-Feed-Total": String(combined.length),
+      "X-Feed-Has-Next": String(end < combined.length),
     });
+
+    return res.json(slice); // <-- ARRAY
   } catch (err) {
     console.error("getPostsByUser error:", err);
     res.status(500).json({ message: err.message });
