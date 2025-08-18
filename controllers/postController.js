@@ -1,9 +1,9 @@
-// controllers/postController.js
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification"); // 🔔 helper
+const crypto = require("crypto");
 
 /* ----------------------- helpers: notify followers on upload ----------------------- */
 async function notifyFollowersPostUpload(authorId, postId) {
@@ -23,7 +23,7 @@ async function notifyFollowersPostUpload(authorId, postId) {
           createNotification({
             userId: fid,
             fromUserId: authorId.toString(),
-            type: "post_upload", // ✅ ensure added to NOTIFICATION_TYPES
+            type: "post_upload",
             postId: postId.toString(),
             message: `${me.username} posted a new update`,
             meta: { kind: "post" },
@@ -49,10 +49,8 @@ exports.createPost = async (req, res) => {
       caption,
     });
 
-    // 🔔 Notify all followers that I uploaded a post (non-blocking)
     notifyFollowersPostUpload(req.user._id, post._id).catch(() => {});
 
-    // Return populated doc for convenience
     const populated = await Post.findById(post._id)
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
@@ -64,16 +62,70 @@ exports.createPost = async (req, res) => {
   }
 };
 
+/* ----------------------------- Shuffle Helpers ---------------------------- */
+function timeDecay(ageHours, tau = 20) {
+  return Math.exp(-ageHours / tau); // 0..1
+}
+
+function jitter(userId, postId, bucketISO, delta = 0.05) {
+  const h = crypto
+    .createHash("sha1")
+    .update(`${userId}|${postId}|${bucketISO}`)
+    .digest("hex");
+  const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
+  return (u * 2 - 1) * delta; // [-delta, +delta]
+}
+
 /* -------------------------------- Get all -------------------------------- */
 exports.getAllPosts = async (req, res) => {
   try {
-    const posts = await Post.find()
-      .sort({ createdAt: -1 })
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic");
+    const userId = req.user?._id?.toString() || "anon";
 
-    res.json(posts);
+    // Bucket = reshuffle every 3h
+    const bucketMs = 3 * 3600 * 1000;
+    const bucketISO = new Date(
+      Math.floor(Date.now() / bucketMs) * bucketMs
+    ).toISOString();
+
+    // Load recent posts (limit for performance)
+    const posts = await Post.find()
+      .populate("userId", "username profilePic")
+      .populate("comments.userId", "username profilePic")
+      .lean();
+
+    const scored = posts.map((p) => {
+      const ageHours =
+        (Date.now() - new Date(p.createdAt).getTime()) / 3600000;
+
+      const recency = timeDecay(ageHours);
+      const quality =
+        Math.min((p.likes?.length || 0) / 50, 1) * 0.5 +
+        Math.min((p.comments?.length || 0) / 20, 1) * 0.8;
+
+      const base = recency * 0.6 + quality * 0.4;
+      const jit = jitter(userId, p._id.toString(), bucketISO);
+
+      return { ...p, baseScore: base + jit };
+    });
+
+    // Sort by score
+    scored.sort((a, b) => b.baseScore - a.baseScore);
+
+    // Diversify (max 2 posts per author per page)
+    const cap = new Map();
+    const diversified = [];
+    for (const item of scored) {
+      const a = item.userId?._id?.toString() || "unknown";
+      const c = cap.get(a) || 0;
+      if (c < 2) {
+        diversified.push(item);
+        cap.set(a, c + 1);
+      }
+    }
+
+    res.json(diversified);
   } catch (err) {
+    console.error("feed error", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -122,14 +174,16 @@ exports.likePost = async (req, res) => {
     post.likes = post.likes || [];
     const already = post.likes.some((id) => id.toString() === actorId);
     if (already) {
-      const updated = await Post.findById(postId).populate("likes", "username profilePic");
+      const updated = await Post.findById(postId).populate(
+        "likes",
+        "username profilePic"
+      );
       return res.json({ message: "Already liked", likes: updated.likes });
     }
 
     post.likes.push(req.user._id);
     await post.save();
 
-    // 🔔 Notify owner (skip self-like)
     if (post.userId.toString() !== actorId) {
       try {
         const actor = await User.findById(actorId).select("username");
@@ -145,7 +199,10 @@ exports.likePost = async (req, res) => {
       }
     }
 
-    const updated = await Post.findById(postId).populate("likes", "username profilePic");
+    const updated = await Post.findById(postId).populate(
+      "likes",
+      "username profilePic"
+    );
     res.json({ message: "Post liked", likes: updated.likes });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -161,10 +218,15 @@ exports.unlikePost = async (req, res) => {
     const post = await Post.findById(postId);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    post.likes = (post.likes || []).filter((id) => id.toString() !== actorId);
+    post.likes = (post.likes || []).filter(
+      (id) => id.toString() !== actorId
+    );
     await post.save();
 
-    const updated = await Post.findById(postId).populate("likes", "username profilePic");
+    const updated = await Post.findById(postId).populate(
+      "likes",
+      "username profilePic"
+    );
     res.json({ message: "Post unliked", likes: updated.likes });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -174,7 +236,6 @@ exports.unlikePost = async (req, res) => {
 /* -------------------------------- Comment -------------------------------- */
 exports.commentPost = async (req, res) => {
   try {
-    // NOTE: client sends { comment: "..." }
     const { comment } = req.body;
     if (!comment || comment.trim().length === 0) {
       return res.status(400).json({ message: "Comment text is required" });
@@ -195,7 +256,6 @@ exports.commentPost = async (req, res) => {
 
     await post.save();
 
-    // 🔔 Notify owner (skip self-comment)
     if (post.userId.toString() !== actorId) {
       try {
         const actor = await User.findById(actorId).select("username");
@@ -211,8 +271,13 @@ exports.commentPost = async (req, res) => {
       }
     }
 
-    const updated = await Post.findById(postId).populate("comments.userId", "username profilePic");
-    res.status(201).json({ message: "Comment added", comments: updated.comments });
+    const updated = await Post.findById(postId).populate(
+      "comments.userId",
+      "username profilePic"
+    );
+    res
+      .status(201)
+      .json({ message: "Comment added", comments: updated.comments });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -238,17 +303,24 @@ exports.deletePost = async (req, res) => {
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     if (post.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Unauthorized to delete this post" });
+      return res
+        .status(403)
+        .json({ message: "Unauthorized to delete this post" });
     }
 
-    // Optional: Cloudinary cleanup
     if (post.images && post.images.length > 0) {
       for (let imageUrl of post.images) {
         const publicId = imageUrl.split("/").pop().split(".")[0];
         try {
-          await cloudinary.uploader.destroy(`posts/${publicId}`, { resource_type: "image" });
+          await cloudinary.uploader.destroy(`posts/${publicId}`, {
+            resource_type: "image",
+          });
         } catch (e) {
-          console.warn("cloudinary image destroy failed:", publicId, e.message);
+          console.warn(
+            "cloudinary image destroy failed:",
+            publicId,
+            e.message
+          );
         }
       }
     }
@@ -256,9 +328,15 @@ exports.deletePost = async (req, res) => {
     if (post.video) {
       const publicId = post.video.split("/").pop().split(".")[0];
       try {
-        await cloudinary.uploader.destroy(`posts/${publicId}`, { resource_type: "video" });
+        await cloudinary.uploader.destroy(`posts/${publicId}`, {
+          resource_type: "video",
+        });
       } catch (e) {
-        console.warn("cloudinary video destroy failed:", publicId, e.message);
+        console.warn(
+          "cloudinary video destroy failed:",
+          publicId,
+          e.message
+        );
       }
     }
 
@@ -270,5 +348,4 @@ exports.deletePost = async (req, res) => {
 };
 
 /* ------------------------------- Aliases --------------------------------- */
-// If your routes expect /comment/:id -> addComment
 exports.addComment = exports.commentPost;
