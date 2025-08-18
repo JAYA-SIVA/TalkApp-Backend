@@ -62,7 +62,7 @@ function timeDecay(ageHours, tau = 20) {
   return Math.exp(-ageHours / tau);
 }
 // per-request seed so every reload reshuffles (or pass ?seed=foo to stabilize)
-function jitter(seed, itemId, delta = 0.12) {
+function jitter(seed, itemId, delta = 0.45) { // stronger jitter so reload reorders
   const h = crypto.createHash("sha1").update(`${seed}|${itemId}`).digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
   return (u * 2 - 1) * delta; // [-delta, +delta]
@@ -71,6 +71,7 @@ function jitter(seed, itemId, delta = 0.12) {
 /* ====== Global feed: Posts + Reels (ARRAY, soft follow boost, reshuffle) ====== */
 exports.getAllPosts = async (req, res) => {
   try {
+    const viewerId = req.user?._id?.toString() || "";
     const shuffleSeed = (req.query.seed || Date.now().toString());
 
     // pagination (headers only; body stays ARRAY)
@@ -97,6 +98,8 @@ exports.getAllPosts = async (req, res) => {
 
     const reels = reelsRaw.map((r) => ({
       _id: r._id,
+      id: r._id.toString(),
+      key: `reel:${r._id.toString()}`,
       userId: r.userId,            // populated
       type: "reel",
       text: "",
@@ -104,11 +107,13 @@ exports.getAllPosts = async (req, res) => {
       images: [],
       video: r.videoUrl || "",
       likes: r.likes || [],        // array of ids
+      likesCount: (r.likes || []).length,
       comments: (r.comments || []).map((c) => ({
         userId: c.userId,          // populated
         comment: c.text,
         createdAt: c.createdAt,
       })),
+      commentsCount: (r.comments || []).length,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
@@ -116,6 +121,8 @@ exports.getAllPosts = async (req, res) => {
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
+        id: p._id.toString(),
+        key: `post:${p._id.toString()}`,
         userId: p.userId,          // populated
         type: p.type || "post",
         text: p.text || "",
@@ -123,11 +130,13 @@ exports.getAllPosts = async (req, res) => {
         images: Array.isArray(p.images) ? p.images : [],
         video: p.video || "",
         likes: p.likes || [],      // ids
+        likesCount: (p.likes || []).length,
         comments: (p.comments || []).map((c) => ({
           userId: c.userId,        // populated
           comment: c.comment,
           createdAt: c.createdAt,
         })),
+        commentsCount: (p.comments || []).length,
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
       })),
@@ -138,21 +147,28 @@ exports.getAllPosts = async (req, res) => {
     const scored = combined.map((item) => {
       const authorId = item.userId?._id?.toString?.() || item.userId?.toString?.() || "";
       const isFollowed = followingSet.has(authorId);
+      const isSelf = authorId === viewerId;
       const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
 
+      // We keep recency light, to avoid "always first" for new uploads
       const recency = timeDecay(ageHours); // 0..1
       const engagement =
-        Math.min((item.likes?.length || 0) / 50, 1) * 0.5 +
-        Math.min((item.comments?.length || 0) / 20, 1) * 0.8;
+        Math.min((item.likesCount || 0) / 50, 1) * 0.35 +
+        Math.min((item.commentsCount || 0) / 20, 1) * 0.65;
 
-      // follow boost only for fresh content (first 2h), then decays quickly
-      const freshWindowHrs = 2;
-      const freshFactor = Math.max(0, 1 - ageHours / freshWindowHrs); // 1..0 over 2h
-      const followBoost = isFollowed ? 0.6 * freshFactor : 0; // soft, time-limited
+      // follow boost only for fresh content (first 1h), then decays quickly
+      const freshWindowHrs = 1;
+      const freshFactor = Math.max(0, 1 - ageHours / freshWindowHrs); // 1..0 over 1h
+      const followBoost = isFollowed ? 0.35 * freshFactor : 0;
 
-      const rand = jitter(shuffleSeed, item._id.toString(), 0.15); // stronger jitter so reload reorders
+      // self posts should NOT be pinned — give them no follow boost and extra randomness
+      const selfPenalty = isSelf ? -0.15 : 0;
 
-      return { ...item, __score: followBoost + recency * 0.5 + engagement * 0.3 + rand };
+      // lighter recency, strong jitter
+      const rand = jitter(shuffleSeed, item.id, 0.45);
+
+      const score = selfPenalty + followBoost + recency * 0.2 + engagement * 0.2 + rand;
+      return { ...item, __score: score };
     });
 
     // sort by score (higher first)
@@ -161,7 +177,12 @@ exports.getAllPosts = async (req, res) => {
     // paginate
     const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
 
+    // NO-CACHE headers to avoid stale mixes (important for Android/OkHttp/CDNs)
     res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store",
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
       "X-Feed-Total": String(scored.length),
@@ -179,6 +200,7 @@ exports.getAllPosts = async (req, res) => {
 /* ====== Reels-only feed: shuffled (ARRAY, mirrors post shape for frontend) ====== */
 exports.getReelsFeed = async (req, res) => {
   try {
+    const viewerId = req.user?._id?.toString() || "";
     const shuffleSeed = (req.query.seed || Date.now().toString());
 
     const page = parseInt(req.query.page) || 1;
@@ -186,7 +208,6 @@ exports.getReelsFeed = async (req, res) => {
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // following set for viewer (soft boost)
     const me = await User.findById(req.user._id).select("following");
     const followingSet = new Set((me?.following || []).map((id) => id.toString()));
 
@@ -197,6 +218,8 @@ exports.getReelsFeed = async (req, res) => {
 
     const items = reelsRaw.map((r) => ({
       _id: r._id,
+      id: r._id.toString(),
+      key: `reel:${r._id.toString()}`,
       userId: r.userId,            // populated
       type: "reel",
       text: "",
@@ -204,33 +227,36 @@ exports.getReelsFeed = async (req, res) => {
       images: [],
       video: r.videoUrl || "",
       likes: r.likes || [],
+      likesCount: (r.likes || []).length,
       comments: (r.comments || []).map((c) => ({
-        userId: c.userId,          // populated
+        userId: c.userId,
         comment: c.text,
         createdAt: c.createdAt,
       })),
+      commentsCount: (r.comments || []).length,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
 
-    // same scoring as home feed
     const scored = items.map((item) => {
       const authorId = item.userId?._id?.toString?.() || item.userId?.toString?.() || "";
       const isFollowed = followingSet.has(authorId);
+      const isSelf = authorId === viewerId;
       const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
 
       const recency = timeDecay(ageHours);
       const engagement =
-        Math.min((item.likes?.length || 0) / 50, 1) * 0.5 +
-        Math.min((item.comments?.length || 0) / 20, 1) * 0.8;
+        Math.min((item.likesCount || 0) / 50, 1) * 0.35 +
+        Math.min((item.commentsCount || 0) / 20, 1) * 0.65;
 
-      const freshWindowHrs = 2;
+      const freshWindowHrs = 1;
       const freshFactor = Math.max(0, 1 - ageHours / freshWindowHrs);
-      const followBoost = isFollowed ? 0.6 * freshFactor : 0;
+      const followBoost = isFollowed ? 0.35 * freshFactor : 0;
+      const selfPenalty = isSelf ? -0.15 : 0;
+      const rand = jitter(shuffleSeed, item.id, 0.45);
 
-      const rand = jitter(shuffleSeed, item._id.toString(), 0.15);
-
-      return { ...item, __score: followBoost + recency * 0.5 + engagement * 0.3 + rand };
+      const score = selfPenalty + followBoost + recency * 0.2 + engagement * 0.2 + rand;
+      return { ...item, __score: score };
     });
 
     scored.sort((a, b) => b.__score - a.__score);
@@ -238,6 +264,10 @@ exports.getReelsFeed = async (req, res) => {
     const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
 
     res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store",
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
       "X-Feed-Total": String(scored.length),
@@ -277,6 +307,8 @@ exports.getPostsByUser = async (req, res) => {
 
     const reels = reelsRaw.map((r) => ({
       _id: r._id,
+      id: r._id.toString(),
+      key: `reel:${r._id.toString()}`,
       userId: r.userId,
       type: "reel",
       text: "",
@@ -284,11 +316,13 @@ exports.getPostsByUser = async (req, res) => {
       images: [],
       video: r.videoUrl || "",
       likes: r.likes || [],
+      likesCount: (r.likes || []).length,
       comments: (r.comments || []).map((c) => ({
         userId: c.userId,
         comment: c.text,
         createdAt: c.createdAt,
       })),
+      commentsCount: (r.comments || []).length,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
@@ -296,6 +330,8 @@ exports.getPostsByUser = async (req, res) => {
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
+        id: p._id.toString(),
+        key: `post:${p._id.toString()}`,
         userId: p.userId,
         type: p.type || "post",
         text: p.text || "",
@@ -303,11 +339,13 @@ exports.getPostsByUser = async (req, res) => {
         images: Array.isArray(p.images) ? p.images : [],
         video: p.video || "",
         likes: p.likes || [],
+        likesCount: (p.likes || []).length,
         comments: (p.comments || []).map((c) => ({
           userId: c.userId,
           comment: c.comment,
           createdAt: c.createdAt,
         })),
+        commentsCount: (p.comments || []).length,
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
       })),
@@ -318,6 +356,10 @@ exports.getPostsByUser = async (req, res) => {
     const slice = combined.slice(start, end);
 
     res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Surrogate-Control": "no-store",
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
       "X-Feed-Total": String(combined.length),
@@ -346,33 +388,28 @@ exports.getPostById = async (req, res) => {
   }
 };
 
-/* --------------------------------- Like ---------------------------------- */
+/* --------------------------------- Like (atomic, no duplicate) ---------------------------------- */
 exports.likePost = async (req, res) => {
   try {
     const postId = req.params.id;
     const actorId = req.user._id.toString();
 
-    const post = await Post.findById(postId);
-    if (!post) return res.status(404).json({ message: "Post not found" });
+    const updated = await Post.findByIdAndUpdate(
+      postId,
+      { $addToSet: { likes: req.user._id } }, // atomic → no duplicates
+      { new: true, runValidators: false }
+    ).select("likes userId");
 
-    post.likes = post.likes || [];
-    const already = post.likes.some((id) => id.toString() === actorId);
-    if (already) {
-      const updated = await Post.findById(postId).select("likes");
-      return res.json({ message: "Already liked", likes: updated.likes });
-    }
+    if (!updated) return res.status(404).json({ message: "Post not found" });
 
-    post.likes.push(req.user._id);
-    await post.save();
-
-    if (post.userId.toString() !== actorId) {
+    if (updated.userId.toString() !== actorId) {
       try {
         const actor = await User.findById(actorId).select("username");
         await createNotification({
-          userId: post.userId.toString(),
+          userId: updated.userId.toString(),
           fromUserId: actorId,
           type: "like",
-          postId: post._id.toString(),
+          postId: postId,
           message: `${actor?.username || "Someone"} liked your post`,
         });
       } catch (e) {
@@ -380,35 +417,42 @@ exports.likePost = async (req, res) => {
       }
     }
 
-    const updated = await Post.findById(postId).select("likes");
-    res.json({ message: "Post liked", likes: updated.likes });
+    return res.json({
+      message: "Post liked",
+      likes: updated.likes,
+      likesCount: updated.likes.length,
+    });
   } catch (err) {
     console.error("likePost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-/* -------------------------------- Unlike --------------------------------- */
+/* -------------------------------- Unlike (atomic) --------------------------------- */
 exports.unlikePost = async (req, res) => {
   try {
     const postId = req.params.id;
-    const actorId = req.user._id.toString();
 
-    const post = await Post.findById(postId);
-    if (!post) return res.status(404).json({ message: "Post not found" });
+    const updated = await Post.findByIdAndUpdate(
+      postId,
+      { $pull: { likes: req.user._id } }, // atomic
+      { new: true, runValidators: false }
+    ).select("likes");
 
-    post.likes = (post.likes || []).filter((id) => id.toString() !== actorId);
-    await post.save();
+    if (!updated) return res.status(404).json({ message: "Post not found" });
 
-    const updated = await Post.findById(postId).select("likes");
-    res.json({ message: "Post unliked", likes: updated.likes });
+    return res.json({
+      message: "Post unliked",
+      likes: updated.likes,
+      likesCount: updated.likes.length,
+    });
   } catch (err) {
     console.error("unlikePost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-/* -------------------------------- Comment -------------------------------- */
+/* -------------------------------- Comment (atomic push + counts) -------------------------------- */
 exports.commentPost = async (req, res) => {
   try {
     const { comment } = req.body;
@@ -419,26 +463,29 @@ exports.commentPost = async (req, res) => {
     const postId = req.params.id;
     const actorId = req.user._id.toString();
 
-    const post = await Post.findById(postId);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-
-    post.comments = post.comments || [];
-    post.comments.push({
+    const newComment = {
       userId: req.user._id,
       comment: comment.trim(),
       createdAt: new Date(),
-    });
+    };
 
-    await post.save();
+    const updated = await Post.findByIdAndUpdate(
+      postId,
+      { $push: { comments: newComment } }, // atomic append
+      { new: true, runValidators: false }
+    ).select("comments userId");
 
-    if (post.userId.toString() !== actorId) {
+    if (!updated) return res.status(404).json({ message: "Post not found" });
+
+    // notify owner
+    if (updated.userId.toString() !== actorId) {
       try {
         const actor = await User.findById(actorId).select("username");
         await createNotification({
-          userId: post.userId.toString(),
+          userId: updated.userId.toString(),
           fromUserId: actorId,
           type: "comment",
-          postId: post._id.toString(),
+          postId: postId,
           message: `${actor?.username || "Someone"} commented on your post`,
         });
       } catch (e) {
@@ -446,8 +493,11 @@ exports.commentPost = async (req, res) => {
       }
     }
 
-    const updated = await Post.findById(postId).select("comments");
-    res.status(201).json({ message: "Comment added", comments: updated.comments });
+    return res.status(201).json({
+      message: "Comment added",
+      comments: updated.comments,
+      commentsCount: updated.comments.length,
+    });
   } catch (err) {
     console.error("commentPost error:", err);
     res.status(500).json({ message: err.message });
@@ -459,7 +509,10 @@ exports.getComments = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id).select("comments");
     if (!post) return res.status(404).json({ message: "Post not found" });
-    res.json(post.comments || []);
+    res.json({
+      comments: post.comments || [],
+      commentsCount: (post.comments || []).length,
+    });
   } catch (err) {
     console.error("getComments error:", err);
     res.status(500).json({ message: err.message });
