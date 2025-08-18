@@ -11,7 +11,6 @@ async function notifyFollowersPostUpload(authorId, postId) {
   try {
     const me = await User.findById(authorId).select("username followers");
     if (!me) return;
-
     const followers = Array.isArray(me.followers) ? me.followers : [];
     if (!followers.length) return;
 
@@ -52,12 +51,8 @@ exports.createPost = async (req, res) => {
 
     notifyFollowersPostUpload(req.user._id, post._id).catch(() => {});
 
-    const populated = await Post.findById(post._id)
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .populate("likes", "username profilePic");
-
-    res.status(201).json(populated || post);
+    // return as stored (no populate) to keep IDs primitive
+    res.status(201).json(post);
   } catch (err) {
     console.error("createPost error:", err);
     res.status(500).json({ message: err.message });
@@ -72,58 +67,56 @@ function jitter(userId, itemId, bucketISO, delta = 0.05) {
   return (u * 2 - 1) * delta;
 }
 
-/* ------------------ Global feed: Posts + Reels (returns ARRAY) ------------------ */
+/* ------------------ Global feed: Posts + Reels (ARRAY, primitive IDs) ------------------ */
 exports.getAllPosts = async (req, res) => {
   try {
     const userId = req.user?._id?.toString() || "anon";
     const bucketMs = 3 * 3600 * 1000;
     const bucketISO = new Date(Math.floor(Date.now() / bucketMs) * bucketMs).toISOString();
 
-    // Pagination params (still used server-side; client receives headers)
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // Posts
-    const posts = await Post.find()
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .populate("likes", "username profilePic")
-      .lean();
+    // Do NOT populate here -> keep userId/likes/comments as primitive ObjectIds
+    const posts = await Post.find().lean();
+    const reels = await Reel.find().lean();
 
-    // Reels (populate comments.userId to match schema we’re using everywhere)
-    const reels = await Reel.find()
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .populate("likes", "username profilePic")
-      .lean();
-
-    // Normalize + keep legacy fields (images/video) for frontend compatibility
+    // Normalize: keep old fields (images/video) AND add media object
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
-        userId: p.userId,
+        userId: p.userId?.toString(),                     // string
         type: p.type || "post",
         caption: p.caption || p.text || "",
-        images: p.images || [],
+        images: Array.isArray(p.images) ? p.images : [],
         video: p.video || "",
-        media: { images: p.images || [], video: p.video || "" },
-        likes: p.likes || [],
-        comments: p.comments || [],
+        media: { images: Array.isArray(p.images) ? p.images : [], video: p.video || "" },
+        likes: (p.likes || []).map((id) => id.toString()), // strings
+        comments: (p.comments || []).map((c) => ({
+          userId: c.userId?.toString(),
+          comment: c.comment,
+          createdAt: c.createdAt,
+        })),
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
       })),
       ...reels.map((r) => ({
         _id: r._id,
-        userId: r.userId,
+        userId: r.userId?.toString(),                     // string
         type: "reel",
         caption: r.caption || "",
         images: [],
         video: r.videoUrl || "",
         media: { images: [], video: r.videoUrl || "" },
-        likes: r.likes || [],
-        comments: r.comments || [],
+        likes: (r.likes || []).map((id) => id.toString()), // strings
+        // Convert reel comments {userId,text,createdAt} -> same shape as post comments
+        comments: (r.comments || []).map((c) => ({
+          userId: (c.userId || c.user)?.toString?.(),
+          comment: c.text,                                 // normalize name
+          createdAt: c.createdAt,
+        })),
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
       })),
@@ -143,19 +136,18 @@ exports.getAllPosts = async (req, res) => {
 
     scored.sort((a, b) => b.baseScore - a.baseScore);
 
-    // Diversify per author (max 2 in the page batch)
+    // Diversify per author (max 2 per page slice)
     const cap = new Map();
     const diversified = [];
     for (const item of scored) {
-      const a = item.userId?._id?.toString?.() || item.userId?.toString?.() || "unknown";
+      const a = item.userId || "unknown";
       const c = cap.get(a) || 0;
       if (c < 2) { diversified.push(item); cap.set(a, c + 1); }
     }
 
-    // Slice page
     const slice = diversified.slice(start, end);
 
-    // Send pagination via headers; body is ARRAY
+    // Pagination via headers; BODY is ARRAY (what your app expects)
     res.set({
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
@@ -164,14 +156,14 @@ exports.getAllPosts = async (req, res) => {
       "X-Feed-Bucket": bucketISO,
     });
 
-    return res.json(slice); // <-- ARRAY to satisfy your Android parser
+    return res.json(slice);
   } catch (err) {
     console.error("getAllPosts feed error:", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-/* -------- Profile feed: Posts + Reels by user (returns ARRAY, newest first) -------- */
+/* -------- Profile feed: Posts + Reels by user (ARRAY, primitive IDs) -------- */
 exports.getPostsByUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -184,44 +176,43 @@ exports.getPostsByUser = async (req, res) => {
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    const posts = await Post.find({ userId })
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .populate("likes", "username profilePic")
-      .lean();
-
-    const reels = await Reel.find({ userId })
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .populate("likes", "username profilePic")
-      .lean();
+    const posts = await Post.find({ userId }).lean();
+    const reels = await Reel.find({ userId }).lean();
 
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
+        userId: p.userId?.toString(),
         type: p.type || "post",
         caption: p.caption || p.text || "",
-        images: p.images || [],
+        images: Array.isArray(p.images) ? p.images : [],
         video: p.video || "",
-        media: { images: p.images || [], video: p.video || "" },
-        likes: p.likes || [],
-        comments: p.comments || [],
+        media: { images: Array.isArray(p.images) ? p.images : [], video: p.video || "" },
+        likes: (p.likes || []).map((id) => id.toString()),
+        comments: (p.comments || []).map((c) => ({
+          userId: c.userId?.toString(),
+          comment: c.comment,
+          createdAt: c.createdAt,
+        })),
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
-        userId: p.userId,
       })),
       ...reels.map((r) => ({
         _id: r._id,
+        userId: r.userId?.toString(),
         type: "reel",
         caption: r.caption || "",
         images: [],
         video: r.videoUrl || "",
         media: { images: [], video: r.videoUrl || "" },
-        likes: r.likes || [],
-        comments: r.comments || [],
+        likes: (r.likes || []).map((id) => id.toString()),
+        comments: (r.comments || []).map((c) => ({
+          userId: (c.userId || c.user)?.toString?.(),
+          comment: c.text,
+          createdAt: c.createdAt,
+        })),
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
-        userId: r.userId,
       })),
     ];
 
@@ -235,7 +226,7 @@ exports.getPostsByUser = async (req, res) => {
       "X-Feed-Has-Next": String(end < combined.length),
     });
 
-    return res.json(slice); // <-- ARRAY
+    return res.json(slice);
   } catch (err) {
     console.error("getPostsByUser error:", err);
     res.status(500).json({ message: err.message });
@@ -243,6 +234,7 @@ exports.getPostsByUser = async (req, res) => {
 };
 
 /* ---------------------------- Get one by id ------------------------------- */
+/* keep populate here — detail screen may need author info */
 exports.getPostById = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id)
@@ -269,7 +261,7 @@ exports.likePost = async (req, res) => {
     post.likes = post.likes || [];
     const already = post.likes.some((id) => id.toString() === actorId);
     if (already) {
-      const updated = await Post.findById(postId).populate("likes", "username profilePic");
+      const updated = await Post.findById(postId).select("likes");
       return res.json({ message: "Already liked", likes: updated.likes });
     }
 
@@ -286,12 +278,10 @@ exports.likePost = async (req, res) => {
           postId: post._id.toString(),
           message: `${actor?.username || "Someone"} liked your post`,
         });
-      } catch (e) {
-        console.error("notify like:", e.message);
-      }
+      } catch (e) { console.error("notify like:", e.message); }
     }
 
-    const updated = await Post.findById(postId).populate("likes", "username profilePic");
+    const updated = await Post.findById(postId).select("likes");
     res.json({ message: "Post liked", likes: updated.likes });
   } catch (err) {
     console.error("likePost error:", err);
@@ -311,7 +301,7 @@ exports.unlikePost = async (req, res) => {
     post.likes = (post.likes || []).filter((id) => id.toString() !== actorId);
     await post.save();
 
-    const updated = await Post.findById(postId).populate("likes", "username profilePic");
+    const updated = await Post.findById(postId).select("likes");
     res.json({ message: "Post unliked", likes: updated.likes });
   } catch (err) {
     console.error("unlikePost error:", err);
@@ -352,12 +342,10 @@ exports.commentPost = async (req, res) => {
           postId: post._id.toString(),
           message: `${actor?.username || "Someone"} commented on your post`,
         });
-      } catch (e) {
-        console.error("notify comment:", e.message);
-      }
+      } catch (e) { console.error("notify comment:", e.message); }
     }
 
-    const updated = await Post.findById(postId).populate("comments.userId", "username profilePic");
+    const updated = await Post.findById(postId).select("comments");
     res.status(201).json({ message: "Comment added", comments: updated.comments });
   } catch (err) {
     console.error("commentPost error:", err);
@@ -368,9 +356,7 @@ exports.commentPost = async (req, res) => {
 /* ------------------------------ Get comments ----------------------------- */
 exports.getComments = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id)
-      .select("comments")
-      .populate("comments.userId", "username profilePic");
+    const post = await Post.findById(req.params.id).select("comments");
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post.comments || []);
   } catch (err) {
@@ -394,9 +380,7 @@ exports.deletePost = async (req, res) => {
         const publicId = imageUrl.split("/").pop().split(".")[0];
         try {
           await cloudinary.uploader.destroy(`posts/${publicId}`, { resource_type: "image" });
-        } catch (e) {
-          console.warn("cloudinary image destroy failed:", publicId, e.message);
-        }
+        } catch (e) { console.warn("cloudinary image destroy failed:", publicId, e.message); }
       }
     }
 
@@ -404,9 +388,7 @@ exports.deletePost = async (req, res) => {
       const publicId = post.video.split("/").pop().split(".")[0];
       try {
         await cloudinary.uploader.destroy(`posts/${publicId}`, { resource_type: "video" });
-      } catch (e) {
-        console.warn("cloudinary video destroy failed:", publicId, e.message);
-      }
+      } catch (e) { console.warn("cloudinary video destroy failed:", publicId, e.message); }
     }
 
     await Post.findByIdAndDelete(req.params.id);
