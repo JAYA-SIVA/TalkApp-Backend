@@ -1,8 +1,9 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
+const Reel = require("../models/Reel");
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
-const createNotification = require("../utils/createNotification"); // 🔔 helper
+const createNotification = require("../utils/createNotification");
 const crypto = require("crypto");
 
 /* ----------------------- helpers: notify followers on upload ----------------------- */
@@ -64,54 +65,90 @@ exports.createPost = async (req, res) => {
 
 /* ----------------------------- Shuffle Helpers ---------------------------- */
 function timeDecay(ageHours, tau = 20) {
-  return Math.exp(-ageHours / tau); // 0..1
+  return Math.exp(-ageHours / tau);
 }
 
-function jitter(userId, postId, bucketISO, delta = 0.05) {
+function jitter(userId, itemId, bucketISO, delta = 0.05) {
   const h = crypto
     .createHash("sha1")
-    .update(`${userId}|${postId}|${bucketISO}`)
+    .update(`${userId}|${itemId}|${bucketISO}`)
     .digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
-  return (u * 2 - 1) * delta; // [-delta, +delta]
+  return (u * 2 - 1) * delta;
 }
 
 /* -------------------------------- Get all -------------------------------- */
 exports.getAllPosts = async (req, res) => {
   try {
     const userId = req.user?._id?.toString() || "anon";
-
-    // Bucket = reshuffle every 3h
     const bucketMs = 3 * 3600 * 1000;
     const bucketISO = new Date(
       Math.floor(Date.now() / bucketMs) * bucketMs
     ).toISOString();
 
-    // Load recent posts (limit for performance)
+    // 🔹 Fetch Posts
     const posts = await Post.find()
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
       .lean();
 
-    const scored = posts.map((p) => {
-      const ageHours =
-        (Date.now() - new Date(p.createdAt).getTime()) / 3600000;
+    // 🔹 Fetch Reels
+    const reels = await Reel.find()
+      .populate("userId", "username profilePic")
+      .populate("comments.user", "username profilePic")
+      .lean();
 
+    // 🔹 Normalize into one list
+    const combined = [
+      ...posts.map((p) => ({
+        _id: p._id,
+        userId: p.userId,
+        type: p.type || "post",
+        caption: p.caption || p.text || "",
+        media: {
+          images: p.images || [],
+          video: p.video || "",
+        },
+        likes: p.likes || [],
+        comments: p.comments || [],
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+      })),
+      ...reels.map((r) => ({
+        _id: r._id,
+        userId: r.userId,
+        type: "reel",
+        caption: r.caption || "",
+        media: {
+          images: [],
+          video: r.videoUrl,
+        },
+        likes: r.likes || [],
+        comments: r.comments || [],
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+    ];
+
+    // 🔹 Score each item
+    const scored = combined.map((item) => {
+      const ageHours =
+        (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
       const recency = timeDecay(ageHours);
       const quality =
-        Math.min((p.likes?.length || 0) / 50, 1) * 0.5 +
-        Math.min((p.comments?.length || 0) / 20, 1) * 0.8;
+        Math.min((item.likes?.length || 0) / 50, 1) * 0.5 +
+        Math.min((item.comments?.length || 0) / 20, 1) * 0.8;
 
       const base = recency * 0.6 + quality * 0.4;
-      const jit = jitter(userId, p._id.toString(), bucketISO);
+      const jit = jitter(userId, item._id.toString(), bucketISO);
 
-      return { ...p, baseScore: base + jit };
+      return { ...item, baseScore: base + jit };
     });
 
-    // Sort by score
+    // 🔹 Sort by score
     scored.sort((a, b) => b.baseScore - a.baseScore);
 
-    // Diversify (max 2 posts per author per page)
+    // 🔹 Diversify (max 2 items per author)
     const cap = new Map();
     const diversified = [];
     for (const item of scored) {
