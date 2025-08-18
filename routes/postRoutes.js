@@ -12,6 +12,7 @@ const auth = require("../middleware/auth");
 const requiredFns = [
   "createPost",
   "getAllPosts",
+  "getReelsFeed",   // <-- new reels feed handler
   "getPostById",
   "getPostsByUser",
   "likePost",
@@ -38,8 +39,11 @@ if (typeof auth !== "function") {
 // 📤 Create a new post
 router.post("/", auth, postCtrl.createPost);
 
-// 🏠 Global feed (merged posts+reels, shuffled, ARRAY body)
+// 🏠 Global feed (merged posts+reels, shuffled each request, ARRAY body)
 router.get("/", auth, postCtrl.getAllPosts);
+
+// 🎬 Reels-only feed (shuffled each request, ARRAY body)
+router.get("/reels", auth, postCtrl.getReelsFeed);
 
 // 👤 Profile feed (user’s posts+reels, ARRAY body)
 router.get("/user/:userId", auth, postCtrl.getPostsByUser);
