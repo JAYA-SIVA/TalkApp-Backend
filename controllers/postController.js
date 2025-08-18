@@ -86,6 +86,12 @@ exports.getAllPosts = async (req, res) => {
       Math.floor(Date.now() / bucketMs) * bucketMs
     ).toISOString();
 
+    // Pagination params
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+
     // 🔹 Fetch Posts
     const posts = await Post.find()
       .populate("userId", "username profilePic")
@@ -148,7 +154,7 @@ exports.getAllPosts = async (req, res) => {
     // 🔹 Sort by score
     scored.sort((a, b) => b.baseScore - a.baseScore);
 
-    // 🔹 Diversify (max 2 items per author)
+    // 🔹 Diversify (max 2 items per author per page batch)
     const cap = new Map();
     const diversified = [];
     for (const item of scored) {
@@ -160,7 +166,16 @@ exports.getAllPosts = async (req, res) => {
       }
     }
 
-    res.json(diversified);
+    // 🔹 Paginate
+    const paginated = diversified.slice(start, end);
+
+    res.json({
+      page,
+      limit,
+      total: diversified.length,
+      hasNext: end < diversified.length,
+      items: paginated,
+    });
   } catch (err) {
     console.error("feed error", err);
     res.status(500).json({ message: err.message });
