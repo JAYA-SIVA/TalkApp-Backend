@@ -2,51 +2,64 @@
 const express = require("express");
 const router = express.Router();
 
-// ✅ Controller functions
-const {
-  createPost,
-  getAllPosts,
-  getPostById,
-  getPostsByUser,
-  likePost,
-  unlikePost,
-  commentPost,
-  getComments,
-  deletePost,
-} = require("../controllers/postController");
+// Import the whole controller as an object (prevents undefined callbacks)
+const postCtrl = require("../controllers/postController");
 
-// ✅ Auth middleware (protect routes)
+// Auth middleware (protect routes)
 const auth = require("../middleware/auth");
+
+// ---- Sanity checks (helpful in deploy logs) ----
+const requiredFns = [
+  "createPost",
+  "getAllPosts",
+  "getPostById",
+  "getPostsByUser",
+  "likePost",
+  "unlikePost",
+  "commentPost",
+  "getComments",
+  "deletePost",
+];
+
+requiredFns.forEach((fn) => {
+  if (typeof postCtrl[fn] !== "function") {
+    console.error(`[postRoutes] Missing controller function: ${fn}`);
+  }
+});
+
+if (typeof auth !== "function") {
+  console.error("[postRoutes] Missing auth middleware — check ../middleware/auth export/path");
+}
 
 /* ─────────────────────────────────────────
    POSTS ROUTES (mounted under /api/posts)
    ───────────────────────────────────────── */
 
 // 📤 Create a new post
-router.post("/", auth, createPost);
+router.post("/", auth, postCtrl.createPost);
 
-// 📥 Get all posts
-router.get("/", auth, getAllPosts);
+// 🏠 Global feed (merged posts+reels, shuffled, ARRAY body)
+router.get("/", auth, postCtrl.getAllPosts);
 
-// 👤 Get posts by a specific user
-router.get("/user/:userId", auth, getPostsByUser);
+// 👤 Profile feed (user’s posts+reels, ARRAY body)
+router.get("/user/:userId", auth, postCtrl.getPostsByUser);
 
 // 💬 Get comments for a post
-router.get("/comments/:id", auth, getComments);
+router.get("/comments/:id", auth, postCtrl.getComments);
 
 // 👍 Like a post
-router.put("/like/:id", auth, likePost);
+router.put("/like/:id", auth, postCtrl.likePost);
 
 // 👎 Unlike a post
-router.put("/unlike/:id", auth, unlikePost);
+router.put("/unlike/:id", auth, postCtrl.unlikePost);
 
 // 💬 Add a comment to a post
-router.post("/comment/:id", auth, commentPost);
+router.post("/comment/:id", auth, postCtrl.commentPost);
 
-// 🆔 Get a single post by ID
-router.get("/:id", auth, getPostById);
+// 🆔 Get a single post by ID (detail screen)
+router.get("/:id", auth, postCtrl.getPostById);
 
 // ❌ Delete a post (owner only)
-router.delete("/:id", auth, deletePost);
+router.delete("/:id", auth, postCtrl.deletePost);
 
 module.exports = router;
