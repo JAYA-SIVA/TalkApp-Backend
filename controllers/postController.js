@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
-const Reel = require("../models/Reel");
+const Reel = require("../models/reel");
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification");
