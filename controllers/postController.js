@@ -96,12 +96,14 @@ exports.getAllPosts = async (req, res) => {
     const posts = await Post.find()
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
+      .populate("likes", "username profilePic")
       .lean();
 
     // 🔹 Fetch Reels
     const reels = await Reel.find()
       .populate("userId", "username profilePic")
       .populate("comments.user", "username profilePic")
+      .populate("likes", "username profilePic")
       .lean();
 
     // 🔹 Normalize into one list
@@ -182,6 +184,76 @@ exports.getAllPosts = async (req, res) => {
   }
 };
 
+/* ------------------------- Posts by a given user -------------------------- */
+exports.getPostsByUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid userId" });
+    }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+
+    // 🔹 Fetch posts & reels of this user
+    const posts = await Post.find({ userId })
+      .populate("userId", "username profilePic")
+      .populate("comments.userId", "username profilePic")
+      .populate("likes", "username profilePic")
+      .lean();
+
+    const reels = await Reel.find({ userId })
+      .populate("userId", "username profilePic")
+      .populate("comments.user", "username profilePic")
+      .populate("likes", "username profilePic")
+      .lean();
+
+    // Normalize
+    const combined = [
+      ...posts.map((p) => ({
+        _id: p._id,
+        type: p.type || "post",
+        caption: p.caption || p.text || "",
+        media: { images: p.images || [], video: p.video || "" },
+        likes: p.likes || [],
+        comments: p.comments || [],
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        userId: p.userId,
+      })),
+      ...reels.map((r) => ({
+        _id: r._id,
+        type: "reel",
+        caption: r.caption || "",
+        media: { images: [], video: r.videoUrl },
+        likes: r.likes || [],
+        comments: r.comments || [],
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        userId: r.userId,
+      })),
+    ];
+
+    // Sort by createdAt (newest first)
+    combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Paginate
+    const paginated = combined.slice(start, end);
+
+    res.json({
+      page,
+      limit,
+      total: combined.length,
+      hasNext: end < combined.length,
+      items: paginated,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 /* ---------------------------- Get one by id ------------------------------- */
 exports.getPostById = async (req, res) => {
   try {
@@ -191,24 +263,6 @@ exports.getPostById = async (req, res) => {
       .populate("likes", "username profilePic");
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-/* ------------------------- Posts by a given user -------------------------- */
-exports.getPostsByUser = async (req, res) => {
-  try {
-    const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "Invalid userId" });
-    }
-
-    const posts = await Post.find({ userId })
-      .sort({ createdAt: -1 })
-      .populate("userId", "username profilePic");
-
-    res.json(posts);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
