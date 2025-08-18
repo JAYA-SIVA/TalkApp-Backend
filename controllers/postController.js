@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Post = require("../models/Post");
-const Reel = require("../models/reel");
+const Reel = require("../models/reel");             // <-- lowercase to match models/reel.js
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification");
@@ -59,6 +59,7 @@ exports.createPost = async (req, res) => {
 
     res.status(201).json(populated || post);
   } catch (err) {
+    console.error("createPost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -69,54 +70,50 @@ function timeDecay(ageHours, tau = 20) {
 }
 
 function jitter(userId, itemId, bucketISO, delta = 0.05) {
-  const h = crypto
-    .createHash("sha1")
-    .update(`${userId}|${itemId}|${bucketISO}`)
-    .digest("hex");
+  const h = crypto.createHash("sha1").update(`${userId}|${itemId}|${bucketISO}`).digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
   return (u * 2 - 1) * delta;
 }
 
-/* -------------------------------- Get all -------------------------------- */
+/* -------------------------------- Get all (merged Posts + Reels, shuffled, paginated) -------------------------------- */
 exports.getAllPosts = async (req, res) => {
   try {
     const userId = req.user?._id?.toString() || "anon";
     const bucketMs = 3 * 3600 * 1000;
-    const bucketISO = new Date(
-      Math.floor(Date.now() / bucketMs) * bucketMs
-    ).toISOString();
+    const bucketISO = new Date(Math.floor(Date.now() / bucketMs) * bucketMs).toISOString();
 
-    // Pagination params
+    // Pagination
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // 🔹 Fetch Posts
+    // Posts
     const posts = await Post.find()
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
       .populate("likes", "username profilePic")
       .lean();
 
-    // 🔹 Fetch Reels
+    // Reels (NOTE: populate comments.userId to match your schema)
     const reels = await Reel.find()
       .populate("userId", "username profilePic")
-      .populate("comments.user", "username profilePic")
+      .populate("comments.userId", "username profilePic")
       .populate("likes", "username profilePic")
       .lean();
 
-    // 🔹 Normalize into one list
+    // Normalize + keep legacy fields for frontend compatibility
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
-        userId: p.userId,
+        userId: p.userId,                  // populated author
         type: p.type || "post",
         caption: p.caption || p.text || "",
-        media: {
-          images: p.images || [],
-          video: p.video || "",
-        },
+        // legacy fields (keep for existing frontend)
+        images: p.images || [],
+        video: p.video || "",
+        // normalized
+        media: { images: p.images || [], video: p.video || "" },
         likes: p.likes || [],
         comments: p.comments || [],
         createdAt: p.createdAt,
@@ -124,13 +121,14 @@ exports.getAllPosts = async (req, res) => {
       })),
       ...reels.map((r) => ({
         _id: r._id,
-        userId: r.userId,
+        userId: r.userId,                  // populated author
         type: "reel",
         caption: r.caption || "",
-        media: {
-          images: [],
-          video: r.videoUrl,
-        },
+        // legacy fields for reels
+        images: [],
+        video: r.videoUrl || "",
+        // normalized
+        media: { images: [], video: r.videoUrl || "" },
         likes: r.likes || [],
         comments: r.comments || [],
         createdAt: r.createdAt,
@@ -138,29 +136,26 @@ exports.getAllPosts = async (req, res) => {
       })),
     ];
 
-    // 🔹 Score each item
+    // Score
     const scored = combined.map((item) => {
-      const ageHours =
-        (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
+      const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
       const recency = timeDecay(ageHours);
       const quality =
         Math.min((item.likes?.length || 0) / 50, 1) * 0.5 +
         Math.min((item.comments?.length || 0) / 20, 1) * 0.8;
-
       const base = recency * 0.6 + quality * 0.4;
       const jit = jitter(userId, item._id.toString(), bucketISO);
-
       return { ...item, baseScore: base + jit };
     });
 
-    // 🔹 Sort by score
+    // Sort by score
     scored.sort((a, b) => b.baseScore - a.baseScore);
 
-    // 🔹 Diversify (max 2 items per author per page batch)
+    // Diversify (max 2 per author)
     const cap = new Map();
     const diversified = [];
     for (const item of scored) {
-      const a = item.userId?._id?.toString() || "unknown";
+      const a = item.userId?._id?.toString?.() || item.userId?.toString?.() || "unknown";
       const c = cap.get(a) || 0;
       if (c < 2) {
         diversified.push(item);
@@ -168,7 +163,7 @@ exports.getAllPosts = async (req, res) => {
       }
     }
 
-    // 🔹 Paginate
+    // Paginate
     const paginated = diversified.slice(start, end);
 
     res.json({
@@ -179,12 +174,12 @@ exports.getAllPosts = async (req, res) => {
       items: paginated,
     });
   } catch (err) {
-    console.error("feed error", err);
+    console.error("getAllPosts feed error:", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-/* ------------------------- Posts by a given user -------------------------- */
+/* ------------------------- Profile feed: Posts + Reels by user (paginated) -------------------------- */
 exports.getPostsByUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -197,7 +192,6 @@ exports.getPostsByUser = async (req, res) => {
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // 🔹 Fetch posts & reels of this user
     const posts = await Post.find({ userId })
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
@@ -206,16 +200,17 @@ exports.getPostsByUser = async (req, res) => {
 
     const reels = await Reel.find({ userId })
       .populate("userId", "username profilePic")
-      .populate("comments.user", "username profilePic")
+      .populate("comments.userId", "username profilePic")
       .populate("likes", "username profilePic")
       .lean();
 
-    // Normalize
     const combined = [
       ...posts.map((p) => ({
         _id: p._id,
         type: p.type || "post",
         caption: p.caption || p.text || "",
+        images: p.images || [],
+        video: p.video || "",
         media: { images: p.images || [], video: p.video || "" },
         likes: p.likes || [],
         comments: p.comments || [],
@@ -227,7 +222,9 @@ exports.getPostsByUser = async (req, res) => {
         _id: r._id,
         type: "reel",
         caption: r.caption || "",
-        media: { images: [], video: r.videoUrl },
+        images: [],
+        video: r.videoUrl || "",
+        media: { images: [], video: r.videoUrl || "" },
         likes: r.likes || [],
         comments: r.comments || [],
         createdAt: r.createdAt,
@@ -236,10 +233,7 @@ exports.getPostsByUser = async (req, res) => {
       })),
     ];
 
-    // Sort by createdAt (newest first)
     combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    // Paginate
     const paginated = combined.slice(start, end);
 
     res.json({
@@ -250,6 +244,7 @@ exports.getPostsByUser = async (req, res) => {
       items: paginated,
     });
   } catch (err) {
+    console.error("getPostsByUser error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -264,6 +259,7 @@ exports.getPostById = async (req, res) => {
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post);
   } catch (err) {
+    console.error("getPostById error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -280,10 +276,7 @@ exports.likePost = async (req, res) => {
     post.likes = post.likes || [];
     const already = post.likes.some((id) => id.toString() === actorId);
     if (already) {
-      const updated = await Post.findById(postId).populate(
-        "likes",
-        "username profilePic"
-      );
+      const updated = await Post.findById(postId).populate("likes", "username profilePic");
       return res.json({ message: "Already liked", likes: updated.likes });
     }
 
@@ -305,12 +298,10 @@ exports.likePost = async (req, res) => {
       }
     }
 
-    const updated = await Post.findById(postId).populate(
-      "likes",
-      "username profilePic"
-    );
+    const updated = await Post.findById(postId).populate("likes", "username profilePic");
     res.json({ message: "Post liked", likes: updated.likes });
   } catch (err) {
+    console.error("likePost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -324,17 +315,13 @@ exports.unlikePost = async (req, res) => {
     const post = await Post.findById(postId);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    post.likes = (post.likes || []).filter(
-      (id) => id.toString() !== actorId
-    );
+    post.likes = (post.likes || []).filter((id) => id.toString() !== actorId);
     await post.save();
 
-    const updated = await Post.findById(postId).populate(
-      "likes",
-      "username profilePic"
-    );
+    const updated = await Post.findById(postId).populate("likes", "username profilePic");
     res.json({ message: "Post unliked", likes: updated.likes });
   } catch (err) {
+    console.error("unlikePost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -377,14 +364,10 @@ exports.commentPost = async (req, res) => {
       }
     }
 
-    const updated = await Post.findById(postId).populate(
-      "comments.userId",
-      "username profilePic"
-    );
-    res
-      .status(201)
-      .json({ message: "Comment added", comments: updated.comments });
+    const updated = await Post.findById(postId).populate("comments.userId", "username profilePic");
+    res.status(201).json({ message: "Comment added", comments: updated.comments });
   } catch (err) {
+    console.error("commentPost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -398,6 +381,7 @@ exports.getComments = async (req, res) => {
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post.comments || []);
   } catch (err) {
+    console.error("getComments error:", err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -409,24 +393,16 @@ exports.deletePost = async (req, res) => {
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     if (post.userId.toString() !== req.user._id.toString()) {
-      return res
-        .status(403)
-        .json({ message: "Unauthorized to delete this post" });
+      return res.status(403).json({ message: "Unauthorized to delete this post" });
     }
 
     if (post.images && post.images.length > 0) {
       for (let imageUrl of post.images) {
         const publicId = imageUrl.split("/").pop().split(".")[0];
         try {
-          await cloudinary.uploader.destroy(`posts/${publicId}`, {
-            resource_type: "image",
-          });
+          await cloudinary.uploader.destroy(`posts/${publicId}`, { resource_type: "image" });
         } catch (e) {
-          console.warn(
-            "cloudinary image destroy failed:",
-            publicId,
-            e.message
-          );
+          console.warn("cloudinary image destroy failed:", publicId, e.message);
         }
       }
     }
@@ -434,21 +410,16 @@ exports.deletePost = async (req, res) => {
     if (post.video) {
       const publicId = post.video.split("/").pop().split(".")[0];
       try {
-        await cloudinary.uploader.destroy(`posts/${publicId}`, {
-          resource_type: "video",
-        });
+        await cloudinary.uploader.destroy(`posts/${publicId}`, { resource_type: "video" });
       } catch (e) {
-        console.warn(
-          "cloudinary video destroy failed:",
-          publicId,
-          e.message
-        );
+        console.warn("cloudinary video destroy failed:", publicId, e.message);
       }
     }
 
     await Post.findByIdAndDelete(req.params.id);
     res.status(200).json({ message: "Post deleted successfully" });
   } catch (err) {
+    console.error("deletePost error:", err);
     res.status(500).json({ message: err.message });
   }
 };
