@@ -6,6 +6,23 @@ const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification");
 const crypto = require("crypto");
 
+/* ─────────────────────────────────────────────
+ * Paging & scoring constants
+ * ───────────────────────────────────────────── */
+const MAX_LIMIT = 300;
+const DEFAULT_LIMIT = 300; // was 50 → now 300 by default
+const FETCH_POOL_MULTIPLIER = 2; // fetch pool = 2x page size before scoring
+
+/* ---------------- small helpers ---------------- */
+function clampLimit(raw) {
+  const n = Number(raw) || DEFAULT_LIMIT;
+  return Math.min(Math.max(n, 1), MAX_LIMIT);
+}
+function parsePage(raw) {
+  const p = Number(raw) || 1;
+  return Math.max(p, 1);
+}
+
 /* ---------------- notify followers on upload ---------------- */
 async function notifyFollowersPostUpload(authorId, postId) {
   try {
@@ -62,10 +79,60 @@ function timeDecay(ageHours, tau = 20) {
   return Math.exp(-ageHours / tau);
 }
 // per-request seed so every reload reshuffles (or pass ?seed=foo to stabilize)
-function jitter(seed, itemId, delta = 0.45) { // stronger jitter so reload reorders
+function jitter(seed, itemId, delta = 0.45) {
   const h = crypto.createHash("sha1").update(`${seed}|${itemId}`).digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
   return (u * 2 - 1) * delta; // [-delta, +delta]
+}
+
+/* Normalize Post → feed item */
+function toPostItem(p) {
+  return {
+    _id: p._id,
+    id: p._id.toString(),
+    key: `post:${p._id.toString()}`,
+    userId: p.userId, // populated
+    type: p.type || "post",
+    text: p.text || "",
+    caption: p.caption || "",
+    images: Array.isArray(p.images) ? p.images : [],
+    video: p.video || "",
+    likes: p.likes || [], // ids
+    likesCount: (p.likes || []).length,
+    comments: (p.comments || []).map((c) => ({
+      userId: c.userId, // populated
+      comment: c.comment,
+      createdAt: c.createdAt,
+    })),
+    commentsCount: (p.comments || []).length,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
+/* Normalize Reel → feed item (post-like shape) */
+function toReelItem(r) {
+  return {
+    _id: r._id,
+    id: r._id.toString(),
+    key: `reel:${r._id.toString()}`,
+    userId: r.userId, // populated
+    type: "reel",
+    text: "",
+    caption: r.caption || "",
+    images: [],
+    video: r.videoUrl || "",
+    likes: r.likes || [],
+    likesCount: (r.likes || []).length,
+    comments: (r.comments || []).map((c) => ({
+      userId: c.userId, // populated
+      comment: c.text,
+      createdAt: c.createdAt,
+    })),
+    commentsCount: (r.comments || []).length,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  };
 }
 
 /* ====== Global feed: Posts + Reels (ARRAY, soft follow boost, reshuffle) ====== */
@@ -75,73 +142,37 @@ exports.getAllPosts = async (req, res) => {
     const shuffleSeed = (req.query.seed || Date.now().toString());
 
     // pagination (headers only; body stays ARRAY)
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = parsePage(req.query.page);
+    const limit = clampLimit(req.query.limit);
     const start = (page - 1) * limit;
     const end = start + limit;
 
     // following set for viewer
-    const me = await User.findById(req.user._id).select("following");
-    const followingSet = new Set((me?.following || []).map((id) => id.toString()));
+    let followingSet = new Set();
+    if (req.user?._id) {
+      const me = await User.findById(req.user._id).select("following");
+      followingSet = new Set((me?.following || []).map((id) => id.toString()));
+    }
 
-    // POSTS: populate user & comment users; keep likes as ids
-    const posts = await Post.find()
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .lean();
+    // fetch a pool (2x page size) of recent posts & reels to keep scoring light
+    const poolSize = limit * FETCH_POOL_MULTIPLIER;
 
-    // REELS: same populate; normalize to post shape
-    const reelsRaw = await Reel.find()
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .lean();
+    const [posts, reelsRaw] = await Promise.all([
+      Post.find({})
+        .sort({ createdAt: -1 })
+        .limit(poolSize)
+        .populate("userId", "username profilePic")
+        .populate("comments.userId", "username profilePic")
+        .lean(),
+      Reel.find({})
+        .sort({ createdAt: -1 })
+        .limit(poolSize)
+        .populate("userId", "username profilePic")
+        .populate("comments.userId", "username profilePic")
+        .lean(),
+    ]);
 
-    const reels = reelsRaw.map((r) => ({
-      _id: r._id,
-      id: r._id.toString(),
-      key: `reel:${r._id.toString()}`,
-      userId: r.userId,            // populated
-      type: "reel",
-      text: "",
-      caption: r.caption || "",
-      images: [],
-      video: r.videoUrl || "",
-      likes: r.likes || [],        // array of ids
-      likesCount: (r.likes || []).length,
-      comments: (r.comments || []).map((c) => ({
-        userId: c.userId,          // populated
-        comment: c.text,
-        createdAt: c.createdAt,
-      })),
-      commentsCount: (r.comments || []).length,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-    }));
-
-    const combined = [
-      ...posts.map((p) => ({
-        _id: p._id,
-        id: p._id.toString(),
-        key: `post:${p._id.toString()}`,
-        userId: p.userId,          // populated
-        type: p.type || "post",
-        text: p.text || "",
-        caption: p.caption || "",
-        images: Array.isArray(p.images) ? p.images : [],
-        video: p.video || "",
-        likes: p.likes || [],      // ids
-        likesCount: (p.likes || []).length,
-        comments: (p.comments || []).map((c) => ({
-          userId: c.userId,        // populated
-          comment: c.comment,
-          createdAt: c.createdAt,
-        })),
-        commentsCount: (p.comments || []).length,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-      })),
-      ...reels,
-    ];
+    const combined = [...posts.map(toPostItem), ...reelsRaw.map(toReelItem)];
 
     // SOFT follow boost (time-limited) + recency + engagement + jitter
     const scored = combined.map((item) => {
@@ -174,7 +205,7 @@ exports.getAllPosts = async (req, res) => {
     // sort by score (higher first)
     scored.sort((a, b) => b.__score - a.__score);
 
-    // paginate
+    // paginate from scored pool
     const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
 
     // NO-CACHE headers to avoid stale mixes (important for Android/OkHttp/CDNs)
@@ -203,40 +234,27 @@ exports.getReelsFeed = async (req, res) => {
     const viewerId = req.user?._id?.toString() || "";
     const shuffleSeed = (req.query.seed || Date.now().toString());
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = parsePage(req.query.page);
+    const limit = clampLimit(req.query.limit);
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    const me = await User.findById(req.user._id).select("following");
-    const followingSet = new Set((me?.following || []).map((id) => id.toString()));
+    let followingSet = new Set();
+    if (req.user?._id) {
+      const me = await User.findById(req.user._id).select("following");
+      followingSet = new Set((me?.following || []).map((id) => id.toString()));
+    }
 
-    const reelsRaw = await Reel.find()
+    const poolSize = limit * FETCH_POOL_MULTIPLIER;
+
+    const reelsRaw = await Reel.find({})
+      .sort({ createdAt: -1 })
+      .limit(poolSize)
       .populate("userId", "username profilePic")
       .populate("comments.userId", "username profilePic")
       .lean();
 
-    const items = reelsRaw.map((r) => ({
-      _id: r._id,
-      id: r._id.toString(),
-      key: `reel:${r._id.toString()}`,
-      userId: r.userId,            // populated
-      type: "reel",
-      text: "",
-      caption: r.caption || "",
-      images: [],
-      video: r.videoUrl || "",
-      likes: r.likes || [],
-      likesCount: (r.likes || []).length,
-      comments: (r.comments || []).map((c) => ({
-        userId: c.userId,
-        comment: c.text,
-        createdAt: c.createdAt,
-      })),
-      commentsCount: (r.comments || []).length,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-    }));
+    const items = reelsRaw.map(toReelItem);
 
     const scored = items.map((item) => {
       const authorId = item.userId?._id?.toString?.() || item.userId?.toString?.() || "";
@@ -290,66 +308,32 @@ exports.getPostsByUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid userId" });
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = parsePage(req.query.page);
+    const limit = clampLimit(req.query.limit);
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    const posts = await Post.find({ userId })
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .lean();
+    // pull a pool to sort + slice locally (keeps output consistent with mixed types)
+    const poolSize = limit * FETCH_POOL_MULTIPLIER;
 
-    const reelsRaw = await Reel.find({ userId })
-      .populate("userId", "username profilePic")
-      .populate("comments.userId", "username profilePic")
-      .lean();
-
-    const reels = reelsRaw.map((r) => ({
-      _id: r._id,
-      id: r._id.toString(),
-      key: `reel:${r._id.toString()}`,
-      userId: r.userId,
-      type: "reel",
-      text: "",
-      caption: r.caption || "",
-      images: [],
-      video: r.videoUrl || "",
-      likes: r.likes || [],
-      likesCount: (r.likes || []).length,
-      comments: (r.comments || []).map((c) => ({
-        userId: c.userId,
-        comment: c.text,
-        createdAt: c.createdAt,
-      })),
-      commentsCount: (r.comments || []).length,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-    }));
+    const [posts, reelsRaw] = await Promise.all([
+      Post.find({ userId })
+        .sort({ createdAt: -1 })
+        .limit(poolSize)
+        .populate("userId", "username profilePic")
+        .populate("comments.userId", "username profilePic")
+        .lean(),
+      Reel.find({ userId })
+        .sort({ createdAt: -1 })
+        .limit(poolSize)
+        .populate("userId", "username profilePic")
+        .populate("comments.userId", "username profilePic")
+        .lean(),
+    ]);
 
     const combined = [
-      ...posts.map((p) => ({
-        _id: p._id,
-        id: p._id.toString(),
-        key: `post:${p._id.toString()}`,
-        userId: p.userId,
-        type: p.type || "post",
-        text: p.text || "",
-        caption: p.caption || "",
-        images: Array.isArray(p.images) ? p.images : [],
-        video: p.video || "",
-        likes: p.likes || [],
-        likesCount: (p.likes || []).length,
-        comments: (p.comments || []).map((c) => ({
-          userId: c.userId,
-          comment: c.comment,
-          createdAt: c.createdAt,
-        })),
-        commentsCount: (p.comments || []).length,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-      })),
-      ...reels,
+      ...posts.map(toPostItem),
+      ...reelsRaw.map(toReelItem),
     ];
 
     combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
