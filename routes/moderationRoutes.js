@@ -1,12 +1,15 @@
-// routes/moderationRoutes.js
-import express from "express";
-import multer from "multer";
-import { checkImage } from "../services/moderationService.js";
+// routes/moderationRoutes.js (CommonJS)
+const express = require("express");
+const multer = require("multer");
+const { checkImage } = require("../services/moderationService");
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } }); // 2MB preview
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 } // 2MB preview
+});
 
-// POST /moderation/image  (field name: image)
+// POST /api/moderation/image   (field name: image)
 router.post("/image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ allowed: false, reason: "No file" });
@@ -19,4 +22,4 @@ router.post("/image", upload.single("image"), async (req, res) => {
   }
 });
 
-export default router;
+module.exports = router;
