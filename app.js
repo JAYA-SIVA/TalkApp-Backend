@@ -68,6 +68,7 @@ apiRouter.use("/reels", require("./routes/reelRoutes"));
 apiRouter.use("/story", require("./routes/storyRoutes"));
 apiRouter.use("/bookmarks", require("./routes/bookmarkRoutes"));
 apiRouter.use("/admin", require("./routes/admin"));
+apiRouter.use("/moderation", require("./routes/moderationRoutes"));
 apiRouter.use("/talk", require("./routes/talk")); // your feed/talk routes
 
 // Mount everything under /api
