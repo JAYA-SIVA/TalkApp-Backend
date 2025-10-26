@@ -1,25 +1,49 @@
+// controllers/otpController.js
 const Otp = require("../models/Otp");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
 
-// 🔐 Gmail Transporter
+// -----------------------------
+// SMTP (SendGrid) Transporter
+// -----------------------------
 const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  host: process.env.SMTP_HOST || "smtp.sendgrid.net",
+  port: Number(process.env.SMTP_PORT || 587),
+  secure: false, // STARTTLS on 587
+  auth: {
+    user: process.env.SMTP_USER || "apikey", // literally "apikey" for SendGrid
+    pass: process.env.SMTP_PASS,             // your SendGrid API key
+  },
 });
+
+// Optional: log once on boot so you know which SMTP is in use
+(async () => {
+  try {
+    await transporter.verify();
+    console.log("[MAIL] SMTP verified:", {
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
+      user: process.env.SMTP_USER,
+      from: process.env.SMTP_FROM,
+    });
+  } catch (e) {
+    console.error("[MAIL] SMTP verify failed:", e.message);
+  }
+})();
 
 // Helpers
 const now = () => new Date();
 const inMinutes = (m) => new Date(Date.now() + m * 60 * 1000);
-const MAX_ATTEMPTS = 5;
-const OTP_TTL_MIN = 10;
+
+// Anti-abuse knobs (tune as you like)
+const MAX_ATTEMPTS = 5;   // wrong-code tries before wipe
+const OTP_TTL_MIN = 10;   // OTP validity
+const COOLDOWN_MIN = 1;   // min gap between sends to same email/purpose
 
 /**
  * POST /api/otp/send
  * body: { email, purpose: 'register' | 'forgot' }
- *  - register: send OTP even if user doesn't exist (and prefer to block if it DOES exist)
- *  - forgot:   only send if user exists
  */
 exports.sendOtp = async (req, res) => {
   try {
@@ -30,15 +54,23 @@ exports.sendOtp = async (req, res) => {
 
     const emailLower = String(email).toLowerCase().trim();
 
+    // Purpose guards
     if (purpose === "forgot") {
       const user = await User.findOne({ email: emailLower });
       if (!user) return res.status(404).json({ success: false, message: "Email not found" });
     } else if (purpose === "register") {
-      // Optional guard: don't allow OTP if already registered
       const exists = await User.findOne({ email: emailLower });
       if (exists) return res.status(409).json({ success: false, message: "Email already registered" });
     }
 
+    // Cooldown: avoid spam / rate limits
+    const last = await Otp.findOne({ email: emailLower, purpose }).sort({ createdAt: -1 });
+    if (last && last.createdAt && Date.now() - last.createdAt.getTime() < COOLDOWN_MIN * 60 * 1000) {
+      const wait = Math.ceil((COOLDOWN_MIN * 60 * 1000 - (Date.now() - last.createdAt.getTime())) / 1000);
+      return res.status(429).json({ success: false, message: `Please wait ${wait}s before requesting another OTP.` });
+    }
+
+    // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     // One active OTP per (email, purpose)
@@ -50,18 +82,16 @@ exports.sendOtp = async (req, res) => {
       consumed: false,
       attempts: 0,
       createdAt: now(),
-      expiresAt: inMinutes(OTP_TTL_MIN)
+      expiresAt: inMinutes(OTP_TTL_MIN),
     });
 
-    const subject =
-      purpose === "register"
-        ? "Verify your Talk account"
-        : "Your OTP for Talk password reset";
+    const subject = purpose === "register"
+      ? "Verify your Talk account"
+      : "Your OTP for Talk password reset";
 
-    const title =
-      purpose === "register"
-        ? "Email Verification OTP"
-        : "Password Reset OTP";
+    const title = purpose === "register"
+      ? "Email Verification OTP"
+      : "Password Reset OTP";
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
@@ -70,10 +100,11 @@ exports.sendOtp = async (req, res) => {
           <h2 style="color: #4CAF50;">${title}</h2>
         </div>
         <p>Hello,</p>
-        <p>${purpose === "register"
-          ? "Use the OTP below to verify your email and complete your registration."
-          : "Use the OTP below to reset your password."}
-        </p>
+        <p>${
+          purpose === "register"
+            ? "Use the OTP below to verify your email and complete your registration."
+            : "Use the OTP below to reset your password."
+        }</p>
         <h1 style="background: #f2f2f2; padding: 15px; border-radius: 5px; text-align: center; color: #333;">${otp}</h1>
         <p style="color: #777;">This OTP is valid for <strong>${OTP_TTL_MIN} minutes</strong>.</p>
         <p style="font-size: 12px; color: #888; margin-top: 30px;">If you didn’t request this, please ignore this email.</p>
@@ -81,24 +112,28 @@ exports.sendOtp = async (req, res) => {
       </div>
     `;
 
+    // Send email via SendGrid SMTP
     await transporter.sendMail({
-      from: `"Talk App" <${process.env.EMAIL_USER}>`,
+      from: process.env.SMTP_FROM,        // e.g., 'Talk App <your-verified@sender.com>'
       to: emailLower,
       subject,
-      html: htmlContent
+      html: htmlContent,
     });
 
     return res.json({ success: true, message: "OTP sent successfully" });
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    // Surface common SMTP mistakes clearly
+    const msg = String(err?.response || err?.message || err);
+    if (msg.includes("Daily user sending limit") || msg.includes("5.4.5")) {
+      return res.status(503).json({ success: false, message: "Email provider rate-limited. Please try again shortly." });
+    }
+    return res.status(500).json({ success: false, message: msg });
   }
 };
 
 /**
  * POST /api/otp/verify   (REGISTRATION)
  * body: { email, otp }
- * - marks OTP as consumed if valid (purpose='register')
- * - does NOT change password
  */
 exports.verifyOtp = async (req, res) => {
   try {
@@ -175,7 +210,7 @@ exports.resetPasswordWithOtp = async (req, res) => {
     entry.consumed = true;
     await entry.save();
 
-    // clean any other forgot OTPs for this email
+    // Clean other consumed forgot OTPs for this email
     await Otp.deleteMany({ email: emailLower, purpose: "forgot", consumed: true });
 
     return res.json({ success: true, message: "Password reset successful" });
