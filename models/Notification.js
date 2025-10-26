@@ -2,13 +2,13 @@
 const mongoose = require("mongoose");
 
 const NOTIFICATION_TYPES = [
-  "follow",          // someone followed you
-  "follow_request",  // someone requested to follow (private account)
+  "follow",
+  "follow_request",
   "like",
   "unlike",
   "comment",
-  "message",         // direct message
-  "post_upload",     // new: user uploaded a new post
+  "message",
+  "post_upload",
 ];
 
 const { Schema } = mongoose;
@@ -39,27 +39,32 @@ const notificationSchema = new Schema(
       index: true,
     },
 
-    // related post for like/comment (nullable)
-    // (You currently store reel _id here too — that's okay; just avoid hardcoded populate)
+    // 🔁 Polymorphic relation: Post or Reel (optional but recommended)
+    // If you ONLY ever reference Post, you can delete postRef and set `ref:"Post"` directly.
+    postRef: {
+      type: String,
+      enum: ["Post", "Reel"],
+      default: "Post",
+    },
     postId: {
       type: Schema.Types.ObjectId,
-      ref: "Post",
+      refPath: "postRef",
       default: null,
       index: true,
     },
 
     // optional extra info (future-proof container)
-    // e.g. { commentText: "...", reelId: "...", preview: "..." }
     meta: {
       type: Object,
       default: {},
     },
 
-    // optional human text (can also be built on client)
+    // optional human text (server or client can render)
     message: {
       type: String,
       default: "",
       trim: true,
+      maxlength: 300,
     },
 
     // read state
@@ -73,11 +78,13 @@ const notificationSchema = new Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
+    versionKey: false, // 👈 cleaner payloads
   }
 );
 
 /* ------------------------------- Indexes ------------------------------- */
-// Optimized listing for a recipient's inbox
+// Optimized listing for a recipient's inbox (sort stable by createdAt/_id)
+notificationSchema.index({ userId: 1, createdAt: -1, _id: -1 });
 notificationSchema.index({ userId: 1, seen: 1, createdAt: -1 });
 // Useful when showing "recent activity you did"
 notificationSchema.index({ fromUserId: 1, createdAt: -1 });
@@ -85,7 +92,6 @@ notificationSchema.index({ fromUserId: 1, createdAt: -1 });
 notificationSchema.index({ userId: 1, type: 1, createdAt: -1 });
 
 /* ------------------------------ Virtuals ------------------------------ */
-// Convenient virtuals for populate (optional)
 notificationSchema.virtual("user", {
   ref: "User",
   localField: "userId",
@@ -99,7 +105,7 @@ notificationSchema.virtual("actor", {
   justOne: true,
 });
 notificationSchema.virtual("post", {
-  ref: "Post",
+  ref: (doc) => doc.postRef, // 👈 respects Post/Reel
   localField: "postId",
   foreignField: "_id",
   justOne: true,
@@ -109,18 +115,34 @@ notificationSchema.virtual("post", {
 /**
  * Create a notification safely.
  * Skips if missing ids or actor === recipient.
+ * Optional collapse window to prevent spam duplicates (e.g., repeated likes in 30s).
  */
 notificationSchema.statics.pushNotification = async function ({
   userId,
   fromUserId,
   type,
   postId = null,
+  postRef = "Post",
   message = "",
   meta = {},
+  collapseWindowSec = 0, // e.g., 30 to collapse duplicates within 30s
 }) {
   if (!userId || !fromUserId || !type) return null;
   if (userId.toString() === fromUserId.toString()) return null; // prevent self-notify
-  return this.create({ userId, fromUserId, type, postId, message, meta });
+
+  if (collapseWindowSec > 0) {
+    const since = new Date(Date.now() - collapseWindowSec * 1000);
+    const dup = await this.findOne({
+      userId,
+      fromUserId,
+      type,
+      postId: postId || null,
+      createdAt: { $gte: since },
+    }).select("_id");
+    if (dup) return dup; // return existing
+  }
+
+  return this.create({ userId, fromUserId, type, postId, postRef, message, meta });
 };
 
 /**
@@ -141,17 +163,25 @@ notificationSchema.statics.listForUser = function (userId, opts = {}) {
   if (type) query.type = type;
 
   let q = this.find(query)
-    .sort({ createdAt: -1 })
+    .select("_id type message seen createdAt fromUserId postId postRef meta")
+    .sort({ createdAt: -1, _id: -1 })
     .skip(skip)
     .limit(Math.min(Number(limit) || 20, 100));
 
   if (populate) {
-    q = q.populate("actor", "_id username profilePic");
-    // NOTE: Do not hardcode populate("postId") here because sometimes this holds a reel _id.
-    // If needed, populate target in the caller based on your own type/logic.
+    q = q
+      .populate("actor", "_id username profilePic")
+      .populate("post", "_id images video caption type thumbnail");
   }
 
   return q;
+};
+
+/**
+ * Count unread for a user.
+ */
+notificationSchema.statics.unreadCountForUser = function (userId) {
+  return this.countDocuments({ userId, seen: false });
 };
 
 /**
@@ -162,10 +192,7 @@ notificationSchema.statics.markSeen = function (userId, ids = []) {
   if (!Array.isArray(ids) || !ids.length) {
     return Promise.resolve({ acknowledged: true, modifiedCount: 0 });
   }
-  return this.updateMany(
-    { userId, _id: { $in: ids } },
-    { $set: { seen: true } }
-  );
+  return this.updateMany({ userId, _id: { $in: ids } }, { $set: { seen: true } });
 };
 
 /**
