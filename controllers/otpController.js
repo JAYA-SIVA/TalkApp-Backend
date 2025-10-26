@@ -4,47 +4,61 @@ const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
 
-// -----------------------------
-// SMTP (SendGrid) Transporter
-// -----------------------------
+/* ─────────────────────────────────────────────────────────────
+   SMTP (SendGrid) Transporter — hardened
+   - Sanitizes env key
+   - Force STARTTLS and PLAIN auth (SendGrid)
+   - Clear, masked boot logs
+   ───────────────────────────────────────────────────────────── */
+const SG_KEY = (process.env.SMTP_PASS || "")
+  .trim()
+  .replace(/^['"]|['"]$/g, ""); // drop surrounding quotes if any
+
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "smtp.sendgrid.net",
   port: Number(process.env.SMTP_PORT || 587),
-  secure: false, // STARTTLS on 587
+  secure: false,          // 587 + STARTTLS
+  requireTLS: true,       // ensure TLS upgrade
+  authMethod: "PLAIN",    // what SendGrid expects
   auth: {
-    user: process.env.SMTP_USER || "apikey", // literally "apikey" for SendGrid
-    pass: process.env.SMTP_PASS,             // your SendGrid API key
+    user: process.env.SMTP_USER || "apikey", // must be literally "apikey"
+    pass: SG_KEY,                             // sanitized SendGrid API key
   },
 });
 
-// Optional: log once on boot so you know which SMTP is in use
+// One-time SMTP verify + masked log
 (async () => {
   try {
-    await transporter.verify();
-    console.log("[MAIL] SMTP verified:", {
+    const mask = (s) => (s ? `${s.slice(0, 3)}…${s.slice(-4)} (len:${s.length})` : "<empty>");
+    console.log("[MAIL] Config:", {
       host: process.env.SMTP_HOST,
       port: process.env.SMTP_PORT,
       user: process.env.SMTP_USER,
       from: process.env.SMTP_FROM,
+      pass: mask(SG_KEY),
     });
+    await transporter.verify();
+    console.log("✅ SMTP verified OK");
   } catch (e) {
-    console.error("[MAIL] SMTP verify failed:", e.message);
+    console.error("❌ SMTP verify failed:", e.message);
   }
 })();
 
-// Helpers
+/* ─────────────────────────────────────────────────────────────
+   Helpers & knobs
+   ───────────────────────────────────────────────────────────── */
 const now = () => new Date();
 const inMinutes = (m) => new Date(Date.now() + m * 60 * 1000);
 
-// Anti-abuse knobs (tune as you like)
+// Anti-abuse (tune as needed)
 const MAX_ATTEMPTS = 5;      // wrong-code tries before wipe
 const OTP_TTL_MIN = 10;      // OTP validity
 const COOLDOWN_MIN = 0.1667; // ≈ 10 seconds gap between sends
 
-/**
- * POST /api/otp/send
- * body: { email, purpose: 'register' | 'forgot' }
- */
+/* ─────────────────────────────────────────────────────────────
+   POST /api/otp/send
+   body: { email, purpose: 'register' | 'forgot' }
+   ───────────────────────────────────────────────────────────── */
 exports.sendOtp = async (req, res) => {
   try {
     const { email, purpose = "forgot" } = req.body || {};
@@ -124,14 +138,18 @@ exports.sendOtp = async (req, res) => {
     return res.json({ success: true, message: "OTP sent successfully" });
   } catch (err) {
     const msg = String(err?.response || err?.message || err);
+    // Common SendGrid login error
+    if (/Invalid login|535 Authentication failed/i.test(msg)) {
+      return res.status(503).json({ success: false, message: "Email service auth failed. Check SMTP_USER=apikey and SMTP_PASS key." });
+    }
     return res.status(500).json({ success: false, message: msg });
   }
 };
 
-/**
- * POST /api/otp/verify   (REGISTRATION)
- * body: { email, otp }
- */
+/* ─────────────────────────────────────────────────────────────
+   POST /api/otp/verify   (REGISTRATION)
+   body: { email, otp }
+   ───────────────────────────────────────────────────────────── */
 exports.verifyOtp = async (req, res) => {
   try {
     const { email, otp } = req.body || {};
@@ -167,10 +185,10 @@ exports.verifyOtp = async (req, res) => {
   }
 };
 
-/**
- * POST /api/otp/reset   (FORGOT PASSWORD)
- * body: { email, otp, newPassword }
- */
+/* ─────────────────────────────────────────────────────────────
+   POST /api/otp/reset   (FORGOT PASSWORD)
+   body: { email, otp, newPassword }
+   ───────────────────────────────────────────────────────────── */
 exports.resetPasswordWithOtp = async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body || {};
