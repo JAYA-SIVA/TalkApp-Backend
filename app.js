@@ -8,8 +8,49 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const morgan = require("morgan");
+const nodemailer = require("nodemailer"); // ✅ for startup verify & optional test
 
+// Load env FIRST
 dotenv.config();
+
+/* ──────────────────────────────
+   📨 SMTP (SendGrid) startup diagnostics
+   ────────────────────────────── */
+function logMailConfig() {
+  // NEVER log secrets
+  const safe = {
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT,
+    user: process.env.SMTP_USER,
+    from: process.env.SMTP_FROM,
+  };
+  console.log("📧 MAIL CONFIG =>", safe);
+}
+
+async function verifySmtpOnce() {
+  try {
+    if (!process.env.SMTP_PASS) {
+      console.warn("⚠️ SMTP_PASS not set; skipping SMTP verify");
+      return;
+    }
+    const tx = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "smtp.sendgrid.net",
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: false,
+      auth: {
+        user: process.env.SMTP_USER || "apikey",
+        pass: process.env.SMTP_PASS,
+      },
+    });
+    await tx.verify();
+    console.log("✅ SMTP verified OK (SendGrid reachable)");
+  } catch (e) {
+    console.error("❌ SMTP verify failed:", e.message);
+  }
+}
+
+logMailConfig();
+verifySmtpOnce();
 
 /* ──────────────────────────────
    ✅ MongoDB Connection (Mongoose 7/8 style)
@@ -55,22 +96,29 @@ app.set("trust proxy", 1);
 /* ──────────────────────────────
    ✅ Middleware
    ────────────────────────────── */
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }, // allow images from Cloudinary/CDN
-}));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" }, // allow images from Cloudinary/CDN
+  })
+);
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || "*",
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN || "*",
+    credentials: true,
+  })
+);
 
 // Preflight for all routes
-app.options("*", cors({
-  origin: process.env.CORS_ORIGIN || "*",
-  credentials: true,
-}));
+app.options(
+  "*",
+  cors({
+    origin: process.env.CORS_ORIGIN || "*",
+    credentials: true,
+  })
+);
 
 // Keep JSON size sane (media should use multer/cloudinary, not JSON)
 app.use(express.json({ limit: "5mb" }));
@@ -87,13 +135,46 @@ app.get("/health", (_req, res) => {
 });
 
 /* ──────────────────────────────
+   🧪 Optional SMTP test route (enable by setting ENABLE_MAILTEST=1)
+   ────────────────────────────── */
+if (process.env.ENABLE_MAILTEST === "1") {
+  app.get("/_mailtest", async (_req, res) => {
+    try {
+      const tx = nodemailer.createTransport({
+        host: process.env.SMTP_HOST || "smtp.sendgrid.net",
+        port: Number(process.env.SMTP_PORT || 587),
+        secure: false,
+        auth: {
+          user: process.env.SMTP_USER || "apikey",
+          pass: process.env.SMTP_PASS,
+        },
+      });
+
+      const to =
+        (process.env.SMTP_FROM && process.env.SMTP_FROM.match(/<(.+)>/)?.[1]) ||
+        process.env.SMTP_FROM;
+
+      await tx.sendMail({
+        from: process.env.SMTP_FROM,
+        to: to || process.env.SMTP_FROM,
+        subject: "SendGrid OK (Talk App)",
+        text: "If you received this, SendGrid SMTP is working.",
+      });
+      res.send("OK: test email sent");
+    } catch (e) {
+      res.status(500).send("Mail test failed: " + String(e?.message || e));
+    }
+  });
+}
+
+/* ──────────────────────────────
    ✅ Routes (mounted under /api)
    ────────────────────────────── */
 const apiRouter = express.Router();
 
 apiRouter.use("/auth", require("./routes/auth"));
 apiRouter.use("/user", require("./routes/userRoutes"));
-apiRouter.use("/otp", require("./routes/otpRoutes"));
+apiRouter.use("/otp", require("./routes/otpRoutes")); // ← uses updated SendGrid-based controller
 apiRouter.use("/chat", require("./routes/chatRoutes"));
 apiRouter.use("/message", require("./routes/messageRoutes"));
 apiRouter.use("/notifications", require("./routes/notificationRoutes"));
@@ -120,7 +201,9 @@ io.on("connection", (socket) => {
       socket.join(String(uid));
       console.log("👤 joined personal room:", uid);
       socket.emit("connected");
-    } catch (e) { /* no-op */ }
+    } catch (e) {
+      /* no-op */
+    }
   });
 
   socket.on("register", (userId) => {
