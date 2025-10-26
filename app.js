@@ -5,22 +5,31 @@ const socketIo = require("socket.io");
 const dotenv = require("dotenv");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const helmet = require("helmet");
+const compression = require("compression");
+const morgan = require("morgan");
 
 dotenv.config();
 
 /* ──────────────────────────────
-   ✅ MongoDB Connection
+   ✅ MongoDB Connection (Mongoose 7/8 style)
    ────────────────────────────── */
-mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => {
+(async () => {
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log("✅ MongoDB connected");
+  } catch (err) {
     console.error("❌ MongoDB connection failed:", err.message);
     process.exit(1);
-  });
+  }
+})();
+
+mongoose.connection.on("error", (err) => {
+  console.error("❌ Mongo error:", err.message);
+});
+mongoose.connection.on("disconnected", () => {
+  console.warn("⚠️ Mongo disconnected");
+});
 
 /* ──────────────────────────────
    ✅ Express + HTTP + Socket.IO
@@ -30,7 +39,7 @@ const server = http.createServer(app);
 
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || "*", // ⚠️ set your app URL in prod
+    origin: process.env.CORS_ORIGIN || "*", // ⚠️ set exact domain(s) in prod
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     credentials: true,
   },
@@ -40,20 +49,45 @@ const io = socketIo(server, {
 app.set("io", io);
 global.io = io;
 
+// Trust reverse proxies (Render/Heroku/Nginx)
+app.set("trust proxy", 1);
+
 /* ──────────────────────────────
    ✅ Middleware
    ────────────────────────────── */
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN || "*",
-    credentials: true,
-  })
-);
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // allow images from Cloudinary/CDN
+}));
+app.use(compression());
+app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || "*",
+  credentials: true,
+}));
+
+// Preflight for all routes
+app.options("*", cors({
+  origin: process.env.CORS_ORIGIN || "*",
+  credentials: true,
+}));
+
+// Keep JSON size sane (media should use multer/cloudinary, not JSON)
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 /* ──────────────────────────────
-   ✅ Routes
+   ✅ Health Checks
+   ────────────────────────────── */
+app.get("/", (_req, res) => {
+  res.status(200).send("🚀 Talk App API is running with Socket.IO ✅");
+});
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
+/* ──────────────────────────────
+   ✅ Routes (mounted under /api)
    ────────────────────────────── */
 const apiRouter = express.Router();
 
@@ -63,23 +97,15 @@ apiRouter.use("/otp", require("./routes/otpRoutes"));
 apiRouter.use("/chat", require("./routes/chatRoutes"));
 apiRouter.use("/message", require("./routes/messageRoutes"));
 apiRouter.use("/notifications", require("./routes/notificationRoutes"));
-apiRouter.use("/posts", require("./routes/postRoutes")); // (if you keep a separate posts router)
+apiRouter.use("/posts", require("./routes/postRoutes"));
 apiRouter.use("/reels", require("./routes/reelRoutes"));
 apiRouter.use("/story", require("./routes/storyRoutes"));
 apiRouter.use("/bookmarks", require("./routes/bookmarkRoutes"));
 apiRouter.use("/admin", require("./routes/admin"));
 apiRouter.use("/moderation", require("./routes/moderationRoutes"));
-apiRouter.use("/talk", require("./routes/talk")); // your feed/talk routes
+apiRouter.use("/talk", require("./routes/talk"));
 
-// Mount everything under /api
 app.use("/api", apiRouter);
-
-/* ──────────────────────────────
-   ✅ Health Check
-   ────────────────────────────── */
-app.get("/", (_req, res) => {
-  res.status(200).send("🚀 Talk App API is running with Socket.IO ✅");
-});
 
 /* ──────────────────────────────
    ✅ Socket.IO
@@ -87,16 +113,16 @@ app.get("/", (_req, res) => {
 io.on("connection", (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
-  // Preferred: client emits { _id: "userId", ... }
   socket.on("setup", (userData) => {
-    const uid = userData?._id || userData?.id;
-    if (!uid) return;
-    socket.join(uid);
-    console.log("👤 joined personal room:", uid);
-    socket.emit("connected");
+    try {
+      const uid = userData?._id || userData?.id;
+      if (!uid) return;
+      socket.join(String(uid));
+      console.log("👤 joined personal room:", uid);
+      socket.emit("connected");
+    } catch (e) { /* no-op */ }
   });
 
-  // Fallback: simple string userId
   socket.on("register", (userId) => {
     if (!userId) return;
     socket.join(String(userId));
@@ -104,22 +130,18 @@ io.on("connection", (socket) => {
     socket.emit("connected");
   });
 
-  // Chat rooms
   socket.on("join chat", (roomId) => {
     if (!roomId) return;
     socket.join(String(roomId));
     console.log("💬 joined chat:", roomId);
   });
 
-  // Typing
-  socket.on("typing", (room) => room && socket.to(room).emit("typing"));
-  socket.on("stop typing", (room) => room && socket.to(room).emit("stop typing"));
+  socket.on("typing", (room) => room && socket.to(String(room)).emit("typing"));
+  socket.on("stop typing", (room) => room && socket.to(String(room)).emit("stop typing"));
 
-  // New message
   socket.on("new message", (message) => {
     const chat = message?.chat;
     if (!chat?.users) return;
-
     chat.users.forEach((user) => {
       if (String(user._id) === String(message.sender?._id)) return;
       socket.to(String(user._id)).emit("message received", message);
@@ -127,7 +149,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Read / Delivered (optional)
   socket.on("message read", ({ chatId, messageId, readerId }) => {
     if (!chatId) return;
     socket.to(String(chatId)).emit("message read", { messageId, readerId });
@@ -138,7 +159,6 @@ io.on("connection", (socket) => {
     socket.to(String(chatId)).emit("message delivered", { messageId, userId });
   });
 
-  // (Optional) explicit subscribe to notifications
   socket.on("notifications:subscribe", (userId) => {
     if (!userId) return;
     socket.join(String(userId));
@@ -159,13 +179,30 @@ app.use((req, res) => {
 
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
-  res.status(500).json({ message: "Server error", error: err.message });
+  res.status(err.status || 500).json({ message: "Server error", error: err.message });
 });
 
 /* ──────────────────────────────
-   ✅ Start Server
+   ✅ Start Server + Graceful Shutdown
    ────────────────────────────── */
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`✅ Server is live on PORT: ${PORT}`);
 });
+
+const shutdown = async (signal) => {
+  console.log(`\n${signal} received, closing gracefully...`);
+  try {
+    await mongoose.connection.close();
+    server.close(() => {
+      console.log("🛑 HTTP server closed, bye!");
+      process.exit(0);
+    });
+  } catch (e) {
+    console.error("Force exit due to error:", e);
+    process.exit(1);
+  }
+};
+["SIGINT", "SIGTERM"].forEach((sig) => process.on(sig, () => shutdown(sig)));
+
+module.exports = app;
