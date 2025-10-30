@@ -1,6 +1,9 @@
 // models/User.js
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 const { Schema } = mongoose;
+
+const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const userSchema = new Schema(
   {
@@ -21,6 +24,11 @@ const userSchema = new Schema(
       lowercase: true,
       trim: true,
       index: true,
+      validate: {
+        validator: (v) => EMAIL_RX.test(String(v || "").trim()),
+        message: "Invalid email format",
+      },
+      set: (v) => String(v || "").trim().toLowerCase(),
     },
     password: {
       type: String,
@@ -34,10 +42,12 @@ const userSchema = new Schema(
       type: String,
       default: "",
       maxlength: 300,
+      trim: true,
     },
     profilePic: {
       type: String, // Cloudinary URL or default image
       default: "",
+      trim: true,
     },
 
     /* 🔐 Admin Control */
@@ -47,30 +57,22 @@ const userSchema = new Schema(
     },
 
     /* 👥 Social Graph */
-    followers: {
-      type: [{ type: Schema.Types.ObjectId, ref: "User" }],
-      default: [],
-    },
-    following: {
-      type: [{ type: Schema.Types.ObjectId, ref: "User" }],
-      default: [],
-    },
+    followers: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    following: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
     /* 🛡️ Privacy + Follow Requests */
     isPrivate: {
       type: Boolean,
       default: false, // true → requests must be accepted
     },
-    followRequests: {
-      type: [{ type: Schema.Types.ObjectId, ref: "User" }], // users who requested to follow me
-      default: [],
-    },
+    followRequests: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
     /* 🛡️ User Role */
     role: {
       type: String,
       enum: ["user", "admin"],
       default: "user",
+      index: true,
     },
 
     /* 🔁 Token Management */
@@ -81,13 +83,17 @@ const userSchema = new Schema(
     },
   },
   {
-    timestamps: true, // createdAt, updatedAt
-    toJSON: { virtuals: true, transform: (_doc, ret) => {
-      delete ret.password;
-      delete ret.refreshTokens;
-      delete ret.__v;
-      return ret;
-    }},
+    timestamps: true,
+    versionKey: false,
+    toJSON: {
+      virtuals: true,
+      transform: (_doc, ret) => {
+        delete ret.password;
+        delete ret.refreshTokens;
+        delete ret.__v;
+        return ret;
+      },
+    },
     toObject: { virtuals: true },
   }
 );
@@ -103,8 +109,23 @@ userSchema.virtual("requestsCount").get(function () {
   return Array.isArray(this.followRequests) ? this.followRequests.length : 0;
 });
 
+/* 🔧 Helpers (non-breaking) */
+userSchema.methods.comparePassword = async function (plain) {
+  // works even if password not selected (you should re-fetch with .select('+password') when needed)
+  if (!this.password) {
+    const fresh = await this.constructor.findById(this._id).select("+password");
+    return fresh?.password ? bcrypt.compare(String(plain), fresh.password) : false;
+  }
+  return bcrypt.compare(String(plain), this.password);
+};
+
+userSchema.methods.setPassword = async function (plain) {
+  this.password = await bcrypt.hash(String(plain), 10);
+  return this.password;
+};
+
 /* 🔍 Indexes */
-userSchema.index({ username: 1 }); // unique declared in field
-userSchema.index({ email: 1 });    // unique declared in field
+userSchema.index({ username: 1 }, { unique: true });
+userSchema.index({ email: 1 }, { unique: true });
 
 module.exports = mongoose.models.User || mongoose.model("User", userSchema);
