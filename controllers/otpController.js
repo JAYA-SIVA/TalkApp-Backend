@@ -2,58 +2,58 @@
 const Otp = require("../models/Otp");
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer");
+const transporter = require("../mailer"); // ✅ centralized, verified SMTP transport
 
 /* ─────────────────────────────────────────────────────────────
-   SMTP (SendGrid) Transporter — hardened
-   - Sanitizes env key
-   - Force STARTTLS and PLAIN auth (SendGrid)
-   - Clear, masked boot logs
+   Config & helpers
    ───────────────────────────────────────────────────────────── */
-const SG_KEY = (process.env.SMTP_PASS || "")
-  .trim()
-  .replace(/^['"]|['"]$/g, ""); // drop surrounding quotes if any
+const OTP_TTL_MIN = Number(process.env.OTP_TTL_MIN || 10);  // minutes
+const MAX_ATTEMPTS = 5;          // wrong-code tries before wipe
+const COOLDOWN_MS = 10 * 1000;   // 10s gap between sends to same email+purpose
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.sendgrid.net",
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: false,          // 587 + STARTTLS
-  requireTLS: true,       // ensure TLS upgrade
-  authMethod: "PLAIN",    // what SendGrid expects
-  auth: {
-    user: process.env.SMTP_USER || "apikey", // must be literally "apikey"
-    pass: SG_KEY,                             // sanitized SendGrid API key
-  },
-});
-
-// One-time SMTP verify + masked log
-(async () => {
-  try {
-    const mask = (s) => (s ? `${s.slice(0, 3)}…${s.slice(-4)} (len:${s.length})` : "<empty>");
-    console.log("[MAIL] Config:", {
-      host: process.env.SMTP_HOST,
-      port: process.env.SMTP_PORT,
-      user: process.env.SMTP_USER,
-      from: process.env.SMTP_FROM,
-      pass: mask(SG_KEY),
-    });
-    await transporter.verify();
-    console.log("✅ SMTP verified OK");
-  } catch (e) {
-    console.error("❌ SMTP verify failed:", e.message);
-  }
-})();
-
-/* ─────────────────────────────────────────────────────────────
-   Helpers & knobs
-   ───────────────────────────────────────────────────────────── */
 const now = () => new Date();
 const inMinutes = (m) => new Date(Date.now() + m * 60 * 1000);
 
-// Anti-abuse (tune as needed)
-const MAX_ATTEMPTS = 5;      // wrong-code tries before wipe
-const OTP_TTL_MIN = 10;      // OTP validity
-const COOLDOWN_MIN = 0.1667; // ≈ 10 seconds gap between sends
+function buildOtpEmail({ purpose, otp }) {
+  const subject =
+    purpose === "register" ? "Verify your Talk account"
+                           : "Your OTP for Talk password reset";
+
+  const title =
+    purpose === "register" ? "Email Verification OTP"
+                           : "Password Reset OTP";
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+      <div style="text-align: center;">
+        <img src="https://res.cloudinary.com/dgemy9u4k/image/upload/v1753100989/logo_tlk_xhdvt1.jpg" alt="Talk Logo" style="height: 80px;"/>
+        <h2 style="color: #4CAF50; margin: 12px 0 0;">${title}</h2>
+      </div>
+      <p style="margin: 16px 0 8px;">Hello,</p>
+      <p style="margin: 0 0 16px;">
+        ${
+          purpose === "register"
+            ? "Use the OTP below to verify your email and complete your registration."
+            : "Use the OTP below to reset your password."
+        }
+      </p>
+      <div style="font-size: 28px; font-weight: 700; letter-spacing: 4px; padding: 12px 16px; background:#f2f2f2; border-radius: 8px; display:inline-block; color:#333;">
+        ${otp}
+      </div>
+      <p style="color:#777; margin: 16px 0 0;">This OTP is valid for <strong>${OTP_TTL_MIN} minutes</strong>.</p>
+      <p style="font-size:12px; color:#888; margin-top: 30px;">If you didn’t request this, please ignore this email.</p>
+      <p style="font-size:12px; color:#888;">— The Talk App Team</p>
+    </div>
+  `;
+
+  const text =
+    (purpose === "register"
+      ? "Verify your email for Talk."
+      : "Reset your password for Talk.") +
+    `\nYour OTP: ${otp}\nValid for ${OTP_TTL_MIN} minutes.`;
+
+  return { subject, html, text };
+}
 
 /* ─────────────────────────────────────────────────────────────
    POST /api/otp/send
@@ -77,27 +77,23 @@ exports.sendOtp = async (req, res) => {
       if (exists) return res.status(409).json({ success: false, message: "Email already registered" });
     }
 
-    // ✅ Fast path: reuse an unexpired OTP for this (email, purpose)
-    const existing = await Otp.findOne({ email: emailLower, purpose, consumed: false })
-                              .sort({ createdAt: -1 });
+    // Cooldown (anti-spam)
+    const lastAny = await Otp.findOne({ email: emailLower, purpose }).sort({ createdAt: -1 });
+    if (lastAny && lastAny.createdAt && Date.now() - lastAny.createdAt.getTime() < COOLDOWN_MS) {
+      const wait = Math.ceil((COOLDOWN_MS - (Date.now() - lastAny.createdAt.getTime())) / 1000);
+      return res.status(429).json({ success: false, message: `Please wait ${wait}s before requesting another OTP.` });
+    }
 
+    // Reuse existing unexpired OTP if present
+    let otpDoc = await Otp.findOne({ email: emailLower, purpose, consumed: false }).sort({ createdAt: -1 });
     let otp;
-    if (existing && existing.expiresAt && existing.expiresAt.getTime() > Date.now()) {
-      otp = existing.otp; // reuse same code
-      // (optional) refresh createdAt so TTL “feels fresh”:
-      // existing.createdAt = new Date(); await existing.save();
+    if (otpDoc && otpDoc.expiresAt && otpDoc.expiresAt.getTime() > Date.now()) {
+      otp = otpDoc.otp;
     } else {
-      // ⏱️ tiny cooldown to avoid spam
-      const last = await Otp.findOne({ email: emailLower, purpose }).sort({ createdAt: -1 });
-      if (last && last.createdAt && Date.now() - last.createdAt.getTime() < COOLDOWN_MIN * 60 * 1000) {
-        const wait = Math.ceil((COOLDOWN_MIN * 60 * 1000 - (Date.now() - last.createdAt.getTime())) / 1000);
-        return res.status(429).json({ success: false, message: `Please wait ${wait}s before requesting another OTP.` });
-      }
-
-      // 🔐 create a new OTP
+      // Create new OTP
       otp = Math.floor(100000 + Math.random() * 900000).toString();
       await Otp.deleteMany({ email: emailLower, purpose });
-      await Otp.create({
+      otpDoc = await Otp.create({
         email: emailLower,
         otp,
         purpose,
@@ -108,39 +104,27 @@ exports.sendOtp = async (req, res) => {
       });
     }
 
-    const subject = purpose === "register" ? "Verify your Talk account" : "Your OTP for Talk password reset";
-    const title   = purpose === "register" ? "Email Verification OTP"   : "Password Reset OTP";
-
-    const htmlContent = `
-      <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-        <div style="text-align: center;">
-          <img src="https://res.cloudinary.com/dgemy9u4k/image/upload/v1753100989/logo_tlk_xhdvt1.jpg" alt="Talk Logo" style="height: 80px;"/>
-          <h2 style="color: #4CAF50;">${title}</h2>
-        </div>
-        <p>Hello,</p>
-        <p>${purpose === "register"
-          ? "Use the OTP below to verify your email and complete your registration."
-          : "Use the OTP below to reset your password."}</p>
-        <h1 style="background:#f2f2f2;padding:15px;border-radius:5px;text-align:center;color:#333;">${otp}</h1>
-        <p style="color:#777;">This OTP is valid for <strong>${OTP_TTL_MIN} minutes</strong>.</p>
-        <p style="font-size:12px;color:#888;margin-top:30px;">If you didn’t request this, please ignore this email.</p>
-        <p style="font-size:12px;color:#888;">— The Talk App Team</p>
-      </div>
-    `;
-
+    // Send the email
+    const { subject, html, text } = buildOtpEmail({ purpose, otp });
     await transporter.sendMail({
-      from: process.env.SMTP_FROM, // e.g., 'Talk App <your-verified@sender.com>'
+      from: process.env.SMTP_FROM,    // must be a verified sender in SendGrid
       to: emailLower,
       subject,
-      html: htmlContent,
+      html,
+      text,
     });
 
     return res.json({ success: true, message: "OTP sent successfully" });
   } catch (err) {
-    const msg = String(err?.response || err?.message || err);
-    // Common SendGrid login error
+    const msg = String(err?.response?.data?.errors?.[0]?.message || err?.message || err);
     if (/Invalid login|535 Authentication failed/i.test(msg)) {
-      return res.status(503).json({ success: false, message: "Email service auth failed. Check SMTP_USER=apikey and SMTP_PASS key." });
+      return res.status(503).json({
+        success: false,
+        message: "Email service auth failed. Ensure SMTP_USER=apikey and SMTP_PASS is a valid SendGrid API key.",
+      });
+    }
+    if (/Daily user sending limit|rate|quota/i.test(msg)) {
+      return res.status(503).json({ success: false, message: "Email provider rate limit reached. Try again shortly." });
     }
     return res.status(500).json({ success: false, message: msg });
   }
