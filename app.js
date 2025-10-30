@@ -8,16 +8,14 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const morgan = require("morgan");
-const nodemailer = require("nodemailer"); // ✅ for startup verify & optional test
 
 // Load env FIRST
 dotenv.config();
 
 /* ──────────────────────────────
-   📨 SMTP (SendGrid) startup diagnostics
+   📧 Mail diagnostics (no secrets)
    ────────────────────────────── */
 function logMailConfig() {
-  // NEVER log secrets
   const safe = {
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT,
@@ -26,31 +24,10 @@ function logMailConfig() {
   };
   console.log("📧 MAIL CONFIG =>", safe);
 }
-
-async function verifySmtpOnce() {
-  try {
-    if (!process.env.SMTP_PASS) {
-      console.warn("⚠️ SMTP_PASS not set; skipping SMTP verify");
-      return;
-    }
-    const tx = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.sendgrid.net",
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: false,
-      auth: {
-        user: process.env.SMTP_USER || "apikey",
-        pass: process.env.SMTP_PASS,
-      },
-    });
-    await tx.verify();
-    console.log("✅ SMTP verified OK (SendGrid reachable)");
-  } catch (e) {
-    console.error("❌ SMTP verify failed:", e.message);
-  }
-}
-
 logMailConfig();
-verifySmtpOnce();
+
+// Centralized mailer (does its own verify on boot)
+const mailer = require("./mailer");
 
 /* ──────────────────────────────
    ✅ MongoDB Connection (Mongoose 7/8 style)
@@ -125,36 +102,16 @@ app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 /* ──────────────────────────────
-   ✅ Health Checks
-   ────────────────────────────── */
-app.get("/", (_req, res) => {
-  res.status(200).send("🚀 Talk App API is running with Socket.IO ✅");
-});
-app.get("/health", (_req, res) => {
-  res.status(200).json({ ok: true, ts: Date.now() });
-});
-
-/* ──────────────────────────────
    🧪 Optional SMTP test route (enable by setting ENABLE_MAILTEST=1)
    ────────────────────────────── */
 if (process.env.ENABLE_MAILTEST === "1") {
   app.get("/_mailtest", async (_req, res) => {
     try {
-      const tx = nodemailer.createTransport({
-        host: process.env.SMTP_HOST || "smtp.sendgrid.net",
-        port: Number(process.env.SMTP_PORT || 587),
-        secure: false,
-        auth: {
-          user: process.env.SMTP_USER || "apikey",
-          pass: process.env.SMTP_PASS,
-        },
-      });
-
       const to =
         (process.env.SMTP_FROM && process.env.SMTP_FROM.match(/<(.+)>/)?.[1]) ||
         process.env.SMTP_FROM;
 
-      await tx.sendMail({
+      await mailer.sendMail({
         from: process.env.SMTP_FROM,
         to: to || process.env.SMTP_FROM,
         subject: "SendGrid OK (Talk App)",
@@ -168,13 +125,40 @@ if (process.env.ENABLE_MAILTEST === "1") {
 }
 
 /* ──────────────────────────────
+   ⛔ Optional: OTP rate-limit (only if express-rate-limit is installed)
+   ────────────────────────────── */
+let otpLimiter = null;
+try {
+  const rateLimit = require("express-rate-limit");
+  otpLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 5,              // 5 OTP ops/min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: "Too many requests, please try again later." },
+  });
+} catch {
+  // express-rate-limit not installed; skip gracefully
+}
+
+/* ──────────────────────────────
+   ✅ Health Checks
+   ────────────────────────────── */
+app.get("/", (_req, res) => {
+  res.status(200).send("🚀 Talk App API is running with Socket.IO ✅");
+});
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
+/* ──────────────────────────────
    ✅ Routes (mounted under /api)
    ────────────────────────────── */
 const apiRouter = express.Router();
 
+// mount non-OTP first
 apiRouter.use("/auth", require("./routes/auth"));
 apiRouter.use("/user", require("./routes/userRoutes"));
-apiRouter.use("/otp", require("./routes/otpRoutes")); // ← uses updated SendGrid-based controller
 apiRouter.use("/chat", require("./routes/chatRoutes"));
 apiRouter.use("/message", require("./routes/messageRoutes"));
 apiRouter.use("/notifications", require("./routes/notificationRoutes"));
@@ -185,6 +169,13 @@ apiRouter.use("/bookmarks", require("./routes/bookmarkRoutes"));
 apiRouter.use("/admin", require("./routes/admin"));
 apiRouter.use("/moderation", require("./routes/moderationRoutes"));
 apiRouter.use("/talk", require("./routes/talk"));
+
+// OTP routes (with optional limiter applied just to this sub-tree)
+if (otpLimiter) {
+  apiRouter.use("/otp", otpLimiter, require("./routes/otpRoutes"));
+} else {
+  apiRouter.use("/otp", require("./routes/otpRoutes"));
+}
 
 app.use("/api", apiRouter);
 
