@@ -102,7 +102,7 @@ app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 /* ──────────────────────────────
-   🧪 Optional SMTP test route (enable by setting ENABLE_MAILTEST=1)
+   🧪 Optional SMTP test route (ENABLE_MAILTEST=1)
    ────────────────────────────── */
 if (process.env.ENABLE_MAILTEST === "1") {
   app.get("/_mailtest", async (_req, res) => {
@@ -156,7 +156,7 @@ app.get("/health", (_req, res) => {
    ────────────────────────────── */
 const apiRouter = express.Router();
 
-// mount non-OTP first
+// non-OTP first
 apiRouter.use("/auth", require("./routes/auth"));
 apiRouter.use("/user", require("./routes/userRoutes"));
 apiRouter.use("/chat", require("./routes/chatRoutes"));
@@ -170,7 +170,7 @@ apiRouter.use("/admin", require("./routes/admin"));
 apiRouter.use("/moderation", require("./routes/moderationRoutes"));
 apiRouter.use("/talk", require("./routes/talk"));
 
-// OTP routes (with optional limiter applied just to this sub-tree)
+// OTP routes (with optional limiter only for this subtree)
 if (otpLimiter) {
   apiRouter.use("/otp", otpLimiter, require("./routes/otpRoutes"));
 } else {
@@ -192,9 +192,7 @@ io.on("connection", (socket) => {
       socket.join(String(uid));
       console.log("👤 joined personal room:", uid);
       socket.emit("connected");
-    } catch (e) {
-      /* no-op */
-    }
+    } catch (e) {}
   });
 
   socket.on("register", (userId) => {
