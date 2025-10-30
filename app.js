@@ -9,7 +9,7 @@ const helmet = require("helmet");
 const compression = require("compression");
 const morgan = require("morgan");
 
-// Load env FIRST
+// Load .env FIRST
 dotenv.config();
 
 /* ──────────────────────────────
@@ -17,6 +17,7 @@ dotenv.config();
    ────────────────────────────── */
 function logMailConfig() {
   const safe = {
+    provider: process.env.MAIL_PROVIDER,
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT,
     user: process.env.SMTP_USER,
@@ -26,11 +27,11 @@ function logMailConfig() {
 }
 logMailConfig();
 
-// Centralized mailer (does its own verify on boot)
+// Centralized mailer (Brevo SMTP)
 const mailer = require("./mailer");
 
 /* ──────────────────────────────
-   ✅ MongoDB Connection (Mongoose 7/8 style)
+   ✅ MongoDB Connection
    ────────────────────────────── */
 (async () => {
   try {
@@ -57,17 +58,17 @@ const server = http.createServer(app);
 
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || "*", // ⚠️ set exact domain(s) in prod
+    origin: process.env.CORS_ORIGIN || "*",
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     credentials: true,
   },
 });
 
-// Make io available everywhere (controllers/utils)
+// Make io globally available
 app.set("io", io);
 global.io = io;
 
-// Trust reverse proxies (Render/Heroku/Nginx)
+// Trust reverse proxies (Render/Heroku)
 app.set("trust proxy", 1);
 
 /* ──────────────────────────────
@@ -75,20 +76,17 @@ app.set("trust proxy", 1);
    ────────────────────────────── */
 app.use(
   helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" }, // allow images from Cloudinary/CDN
+    crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
 app.use(compression());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
-
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || "*",
     credentials: true,
   })
 );
-
-// Preflight for all routes
 app.options(
   "*",
   cors({
@@ -96,53 +94,58 @@ app.options(
     credentials: true,
   })
 );
-
-// Keep JSON size sane (media should use multer/cloudinary, not JSON)
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 /* ──────────────────────────────
-   🧪 Optional SMTP test route (ENABLE_MAILTEST=1)
+   🧪 Optional SMTP Test Route (for Brevo)
    ────────────────────────────── */
 if (process.env.ENABLE_MAILTEST === "1") {
   app.get("/_mailtest", async (_req, res) => {
     try {
       const to =
-        (process.env.SMTP_FROM && process.env.SMTP_FROM.match(/<(.+)>/)?.[1]) ||
+        (process.env.SMTP_FROM &&
+          process.env.SMTP_FROM.match(/<(.+)>/)?.[1]) ||
         process.env.SMTP_FROM;
 
       await mailer.sendMail({
         from: process.env.SMTP_FROM,
         to: to || process.env.SMTP_FROM,
-        subject: "SendGrid OK (Talk App)",
-        text: "If you received this, SendGrid SMTP is working.",
+        subject: "✅ Brevo OK (Talk App)",
+        text: "If you received this, Brevo SMTP is working correctly.",
       });
-      res.send("OK: test email sent");
+
+      console.log("📨 Test email sent via Brevo!");
+      res.send("✅ OK: test email sent via Brevo");
     } catch (e) {
+      console.error("❌ Mail test failed:", e.message);
       res.status(500).send("Mail test failed: " + String(e?.message || e));
     }
   });
 }
 
 /* ──────────────────────────────
-   ⛔ Optional: OTP rate-limit (only if express-rate-limit is installed)
+   ⛔ Optional: OTP rate-limit
    ────────────────────────────── */
 let otpLimiter = null;
 try {
   const rateLimit = require("express-rate-limit");
   otpLimiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
-    max: 5,              // 5 OTP ops/min per IP
+    max: 5, // 5 OTP ops/min per IP
     standardHeaders: true,
     legacyHeaders: false,
-    message: { success: false, message: "Too many requests, please try again later." },
+    message: {
+      success: false,
+      message: "Too many OTP requests, please try again later.",
+    },
   });
 } catch {
-  // express-rate-limit not installed; skip gracefully
+  console.warn("[WARN] express-rate-limit not installed; skipping limiter.");
 }
 
 /* ──────────────────────────────
-   ✅ Health Checks
+   ✅ Health Check Routes
    ────────────────────────────── */
 app.get("/", (_req, res) => {
   res.status(200).send("🚀 Talk App API is running with Socket.IO ✅");
@@ -152,11 +155,11 @@ app.get("/health", (_req, res) => {
 });
 
 /* ──────────────────────────────
-   ✅ Routes (mounted under /api)
+   ✅ Mount Routes (/api)
    ────────────────────────────── */
 const apiRouter = express.Router();
 
-// non-OTP first
+// Main routes
 apiRouter.use("/auth", require("./routes/auth"));
 apiRouter.use("/user", require("./routes/userRoutes"));
 apiRouter.use("/chat", require("./routes/chatRoutes"));
@@ -170,7 +173,7 @@ apiRouter.use("/admin", require("./routes/admin"));
 apiRouter.use("/moderation", require("./routes/moderationRoutes"));
 apiRouter.use("/talk", require("./routes/talk"));
 
-// OTP routes (with optional limiter only for this subtree)
+// OTP routes
 if (otpLimiter) {
   apiRouter.use("/otp", otpLimiter, require("./routes/otpRoutes"));
 } else {
@@ -180,19 +183,17 @@ if (otpLimiter) {
 app.use("/api", apiRouter);
 
 /* ──────────────────────────────
-   ✅ Socket.IO
+   ✅ Socket.IO Events
    ────────────────────────────── */
 io.on("connection", (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
   socket.on("setup", (userData) => {
-    try {
-      const uid = userData?._id || userData?.id;
-      if (!uid) return;
-      socket.join(String(uid));
-      console.log("👤 joined personal room:", uid);
-      socket.emit("connected");
-    } catch (e) {}
+    const uid = userData?._id || userData?.id;
+    if (!uid) return;
+    socket.join(String(uid));
+    console.log("👤 joined personal room:", uid);
+    socket.emit("connected");
   });
 
   socket.on("register", (userId) => {
@@ -209,7 +210,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("typing", (room) => room && socket.to(String(room)).emit("typing"));
-  socket.on("stop typing", (room) => room && socket.to(String(room)).emit("stop typing"));
+  socket.on("stop typing", (room) =>
+    room && socket.to(String(room)).emit("stop typing")
+  );
 
   socket.on("new message", (message) => {
     const chat = message?.chat;
@@ -243,7 +246,7 @@ io.on("connection", (socket) => {
 });
 
 /* ──────────────────────────────
-   ❌ 404 + Error handler (basic)
+   ❌ 404 + Error Handler
    ────────────────────────────── */
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found" });
@@ -251,7 +254,9 @@ app.use((req, res) => {
 
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
-  res.status(err.status || 500).json({ message: "Server error", error: err.message });
+  res
+    .status(err.status || 500)
+    .json({ message: "Server error", error: err.message });
 });
 
 /* ──────────────────────────────
@@ -275,6 +280,7 @@ const shutdown = async (signal) => {
     process.exit(1);
   }
 };
+
 ["SIGINT", "SIGTERM"].forEach((sig) => process.on(sig, () => shutdown(sig)));
 
 module.exports = app;
