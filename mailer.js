@@ -1,7 +1,8 @@
 // mailer.js
 const nodemailer = require("nodemailer");
 
-const PROVIDER = (process.env.MAIL_PROVIDER || "sendgrid").toLowerCase();
+// detect mail provider from env
+const PROVIDER = (process.env.MAIL_PROVIDER || "brevo").toLowerCase();
 
 function mask(s) {
   if (!s) return "<empty>";
@@ -10,21 +11,21 @@ function mask(s) {
 }
 
 /**
- * Build one real Nodemailer transport and a safe info object
- * (no secrets exposed).
+ * Builds and verifies the email transport configuration.
  */
 function buildTransport() {
+  // ──────────────── GMAIL SUPPORT ────────────────
   if (PROVIDER === "gmail") {
-    // Gmail (requires 2FA + App Password)
     const user = process.env.EMAIL_USER;
     const pass = process.env.EMAIL_PASS;
+
     if (!user || !pass) {
       throw new Error("Gmail EMAIL_USER/EMAIL_PASS missing");
     }
 
-    const from = process.env.SMTP_FROM || user; // default from = your Gmail
-    console.log("[MAIL] Provider: gmail");
-    console.log("[MAIL] Gmail config:", {
+    const from = process.env.SMTP_FROM || user;
+    console.log("[MAIL] Provider: Gmail");
+    console.log("[MAIL] Gmail Config:", {
       user,
       from,
       pass: mask(pass),
@@ -35,21 +36,31 @@ function buildTransport() {
       auth: { user, pass },
     });
 
-    const info = { provider: "gmail", host: "smtp.gmail.com", port: 465, user, from };
+    const info = {
+      provider: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      user,
+      from,
+    };
     return { transporter, info };
   }
 
-  // Default: SendGrid over SMTP
-  const host = process.env.SMTP_HOST || "smtp.sendgrid.net";
+  // ──────────────── BREVO (SENDINBLUE) SMTP ────────────────
+  const host = process.env.SMTP_HOST || "smtp-relay.brevo.com";
   const port = Number(process.env.SMTP_PORT || 587);
-  const user = process.env.SMTP_USER || "apikey"; // must literally be "apikey"
-  const pass = (process.env.SMTP_PASS || "").trim().replace(/^['"]|['"]$/g, "");
-  const from = process.env.SMTP_FROM; // must be a verified sender in SendGrid
+  const user = process.env.SMTP_USER; // e.g. 9a692e001@smtp-brevo.com
+  const pass = (process.env.SMTP_PASS || "").trim();
+  const from = process.env.SMTP_FROM; // must match verified sender in Brevo
 
-  console.log("[MAIL] Provider: sendgrid");
-  console.log("[MAIL] SendGrid config:", {
+  if (!user || !pass || !from) {
+    throw new Error("Brevo SMTP_USER/SMTP_PASS/SMTP_FROM missing in .env");
+  }
+
+  console.log("[MAIL] Provider: Brevo (Sendinblue)");
+  console.log("[MAIL] Brevo Config:", {
     host,
-    port: String(port),
+    port,
     user,
     from,
     pass: mask(pass),
@@ -58,19 +69,25 @@ function buildTransport() {
   const transporter = nodemailer.createTransport({
     host,
     port,
-    secure: false,       // STARTTLS on 587
+    secure: false, // STARTTLS
     requireTLS: true,
-    authMethod: "PLAIN", // what SendGrid expects
     auth: { user, pass },
   });
 
-  const info = { provider: "sendgrid", host, port, user, from };
+  const info = {
+    provider: "brevo",
+    host,
+    port,
+    user,
+    from,
+  };
   return { transporter, info };
 }
 
+// build transport
 const { transporter: _transport, info } = buildTransport();
 
-/** Verify once on boot (non-fatal). */
+/** Verify SMTP connection on startup (non-fatal). */
 (async () => {
   try {
     await _transport.verify();
@@ -80,16 +97,17 @@ const { transporter: _transport, info } = buildTransport();
   }
 })();
 
-/** Send helper — calls the REAL transport directly (no recursion). */
+/** Sends an email using the established transport */
 async function sendMail(opts = {}) {
   const from =
     opts.from ||
     info.from ||
-    "Talk <no-reply@example.com>";
+    "Talk App <no-reply@talkapp.com>";
 
   return _transport.sendMail({ ...opts, from });
 }
 
+/** Optional manual verification */
 async function verify() {
   return _transport.verify();
 }
@@ -97,6 +115,6 @@ async function verify() {
 module.exports = {
   sendMail,
   verify,
-  info,                               // for GET /_mailinfo diagnostics
+  info,
   getProvider: () => PROVIDER,
 };
