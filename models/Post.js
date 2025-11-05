@@ -66,17 +66,20 @@ const postSchema = new Schema(
 
     /* ------------------ Adult / approval flags used by client ------------------ */
     // Marked by your policy (never settable by normal clients)
-    isAdult: { type: Boolean, default: false, index: true },
-
+    isAdult:   { type: Boolean, default: false, index: true },
     // Visible flag to quickly hide content from feeds/search
-    isApproved: { type: Boolean, default: true, index: true },
+    isApproved:{ type: Boolean, default: true,  index: true },
 
-    /* ------------------------- Moderation audit trail -------------------------- */
+    /* ---------------------------- ▶ Views counter ---------------------------- */
+    // Simple cumulative views counter (will show in feeds/detail)
+    views: { type: Number, default: 0, min: 0, index: true },
+
+    /* ------------------------- Moderation audit trail ------------------------ */
     moderation: { type: moderationSchema, default: () => ({}) },
   },
   {
     timestamps: true, // createdAt & updatedAt
-    toJSON: { virtuals: true },
+    toJSON:   { virtuals: true },
     toObject: { virtuals: true },
   }
 );
@@ -88,6 +91,10 @@ postSchema.virtual("likesCount").get(function () {
 postSchema.virtual("commentsCount").get(function () {
   return Array.isArray(this.comments) ? this.comments.length : 0;
 });
+// convenience virtual if you prefer `viewsCount` on client
+postSchema.virtual("viewsCount").get(function () {
+  return typeof this.views === "number" ? this.views : 0;
+});
 
 /* -------------------------------- Indexes -------------------------------- */
 postSchema.index({ createdAt: -1 });
@@ -95,8 +102,9 @@ postSchema.index({ userId: 1, createdAt: -1 });
 postSchema.index({ type: 1, createdAt: -1 });
 postSchema.index({ isApproved: 1, createdAt: -1 });
 postSchema.index({ isAdult: 1, createdAt: -1 });
+// already added on field: views (to sort by most viewed)
 
-/* -------------------------- Lightweight adult check -------------------------- */
+/* -------------------------- Lightweight adult check ---------------------- */
 /**
  * A tiny keyword gate. Keep server-side so Android can’t bypass it.
  * You can expand/replace with your own classifier.
@@ -111,7 +119,7 @@ postSchema.statics.isAdultish = function (text = "") {
   return ADULT_REGEX.test(text || "");
 };
 
-/* --------------------------- Client safety helpers --------------------------- */
+/* --------------------------- Client safety helpers ----------------------- */
 /**
  * Strip client attempts to forcibly set moderation flags.
  * Use in your route before `new Post(body)`:
@@ -122,6 +130,7 @@ postSchema.statics.sanitizeClientCreate = function (body = {}) {
   delete clean.isAdult;
   delete clean.isApproved;
   delete clean.moderation;
+  delete clean.views; // prevent clients from faking views
   return clean;
 };
 
@@ -131,13 +140,10 @@ postSchema.statics.sanitizeClientCreate = function (body = {}) {
  *   post.enforceClientDefaults();
  */
 postSchema.methods.enforceClientDefaults = function () {
-  // Default path: content is approved & not adult unless policy flags it
-  const adult = (this.caption && ADULT_REGEX.test(this.caption)) ||
-                (this.text && ADULT_REGEX.test(this.text));
+  const adult =
+    (this.caption && ADULT_REGEX.test(this.caption)) ||
+    (this.text && ADULT_REGEX.test(this.text));
   if (adult) {
-    // Choose your behavior:
-    // A) Block in route (recommended for “stop at upload”)
-    // B) Mark as adult & unapproved (kept here for workflows)
     this.isAdult = true;
     this.isApproved = false;
     this.moderation = {
@@ -149,14 +155,13 @@ postSchema.methods.enforceClientDefaults = function () {
   } else {
     this.isAdult = false;
     this.isApproved = true;
-    // keep moderation.approved as default
   }
 };
 
-/* --------------------------- Admin override helper -------------------------- */
+/* ------------------------------ Admin override --------------------------- */
 /**
  * For admins/moderators to approve/reject content explicitly.
- *   await post.applyModeration({ status: "approved" }) // also clears isAdult
+ *   await post.applyModeration({ status: "approved" })
  */
 postSchema.methods.applyModeration = async function ({
   status,
@@ -165,23 +170,36 @@ postSchema.methods.applyModeration = async function ({
 }) {
   if (!["approved", "rejected", "pending"].includes(status)) return this;
 
-  this.moderation.status = status;
-  this.moderation.reason = reason;
+  this.moderation.status   = status;
+  this.moderation.reason   = reason;
   this.moderation.reviewer = reviewer;
   this.moderation.reviewedAt = new Date();
 
   if (status === "approved") {
     this.isApproved = true;
-    // You can also decide to keep isAdult=true but allow show-with-gate;
-    // since your Android now *gates* adult content, keeping it true is OK:
-    // this.isAdult = true; // if you want to keep adult flag but still approved
   } else if (status === "rejected") {
     this.isApproved = false;
   } else if (status === "pending") {
     this.isApproved = false;
   }
-
   return this.save();
+};
+
+/* ----------------------------- View helpers ------------------------------ */
+/** Simple (+1) counter — use when the client opens the post detail */
+postSchema.statics.bumpView = async function (postId) {
+  if (!postId) return;
+  await this.findByIdAndUpdate(postId, { $inc: { views: 1 } }, { lean: true });
+};
+
+/**
+ * If later you want **unique per user/IP per day**, wire a ViewLog model and
+ * switch your route to call `bumpViewUnique(...)` instead.
+ * (This method is a stub; implement with ViewLog when ready.)
+ */
+postSchema.statics.bumpViewUnique = async function (_postId, _key) {
+  // placeholder for future unique-view logic
+  return this.bumpView(_postId);
 };
 
 module.exports = mongoose.models.Post || mongoose.model("Post", postSchema);
