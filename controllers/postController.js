@@ -1,10 +1,11 @@
+// controllers/postController.js
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 const Post = require("../models/Post");
 const Reel = require("../models/reel"); // match models/reel.js
 const User = require("../models/User");
 const cloudinary = require("../config/cloudinary");
 const createNotification = require("../utils/createNotification");
-const crypto = require("crypto");
 
 /* ─────────────────────────────────────────────
  * Paging & scoring constants
@@ -78,7 +79,6 @@ exports.createPost = async (req, res) => {
 function timeDecay(ageHours, tau = 20) {
   return Math.exp(-ageHours / tau);
 }
-// per-request seed so every reload reshuffles (or pass ?seed=foo to stabilize)
 function jitter(seed, itemId, delta = 0.45) {
   const h = crypto.createHash("sha1").update(`${seed}|${itemId}`).digest("hex");
   const u = parseInt(h.slice(0, 8), 16) / 0xffffffff;
@@ -105,6 +105,7 @@ function toPostItem(p) {
       createdAt: c.createdAt,
     })),
     commentsCount: (p.comments || []).length,
+    views: typeof p.views === "number" ? p.views : 0, // 👁️ include views
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
@@ -130,6 +131,7 @@ function toReelItem(r) {
       createdAt: c.createdAt,
     })),
     commentsCount: (r.comments || []).length,
+    views: typeof r.views === "number" ? r.views : 0, // 👁️ include views
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -139,7 +141,7 @@ function toReelItem(r) {
 exports.getAllPosts = async (req, res) => {
   try {
     const viewerId = req.user?._id?.toString() || "";
-    const shuffleSeed = (req.query.seed || Date.now().toString());
+    const shuffleSeed = req.query.seed || Date.now().toString();
 
     // pagination (headers only; body stays ARRAY)
     const page = parsePage(req.query.page);
@@ -174,45 +176,37 @@ exports.getAllPosts = async (req, res) => {
 
     const combined = [...posts.map(toPostItem), ...reelsRaw.map(toReelItem)];
 
-    // SOFT follow boost (time-limited) + recency + engagement + jitter
+    // SOFT follow boost + recency + engagement + jitter
     const scored = combined.map((item) => {
       const authorId = item.userId?._id?.toString?.() || item.userId?.toString?.() || "";
       const isFollowed = followingSet.has(authorId);
       const isSelf = authorId === viewerId;
       const ageHours = (Date.now() - new Date(item.createdAt).getTime()) / 3600000;
 
-      // We keep recency light, to avoid "always first" for new uploads
       const recency = timeDecay(ageHours); // 0..1
       const engagement =
         Math.min((item.likesCount || 0) / 50, 1) * 0.35 +
         Math.min((item.commentsCount || 0) / 20, 1) * 0.65;
 
-      // follow boost only for fresh content (first 1h), then decays quickly
       const freshWindowHrs = 1;
       const freshFactor = Math.max(0, 1 - ageHours / freshWindowHrs); // 1..0 over 1h
       const followBoost = isFollowed ? 0.35 * freshFactor : 0;
 
-      // self posts should NOT be pinned — give them no follow boost and extra randomness
       const selfPenalty = isSelf ? -0.15 : 0;
-
-      // lighter recency, strong jitter
       const rand = jitter(shuffleSeed, item.id, 0.45);
 
       const score = selfPenalty + followBoost + recency * 0.2 + engagement * 0.2 + rand;
       return { ...item, __score: score };
     });
 
-    // sort by score (higher first)
     scored.sort((a, b) => b.__score - a.__score);
 
-    // paginate from scored pool
     const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
 
-    // NO-CACHE headers to avoid stale mixes (important for Android/OkHttp/CDNs)
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      "Pragma": "no-cache",
-      "Expires": "0",
+      Pragma: "no-cache",
+      Expires: "0",
       "Surrogate-Control": "no-store",
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
@@ -232,7 +226,7 @@ exports.getAllPosts = async (req, res) => {
 exports.getReelsFeed = async (req, res) => {
   try {
     const viewerId = req.user?._id?.toString() || "";
-    const shuffleSeed = (req.query.seed || Date.now().toString());
+    const shuffleSeed = req.query.seed || Date.now().toString();
 
     const page = parsePage(req.query.page);
     const limit = clampLimit(req.query.limit);
@@ -278,13 +272,12 @@ exports.getReelsFeed = async (req, res) => {
     });
 
     scored.sort((a, b) => b.__score - a.__score);
-
     const slice = scored.slice(start, end).map(({ __score, ...rest }) => rest);
 
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      "Pragma": "no-cache",
-      "Expires": "0",
+      Pragma: "no-cache",
+      Expires: "0",
       "Surrogate-Control": "no-store",
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
@@ -313,7 +306,6 @@ exports.getPostsByUser = async (req, res) => {
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // pull a pool to sort + slice locally (keeps output consistent with mixed types)
     const poolSize = limit * FETCH_POOL_MULTIPLIER;
 
     const [posts, reelsRaw] = await Promise.all([
@@ -331,18 +323,15 @@ exports.getPostsByUser = async (req, res) => {
         .lean(),
     ]);
 
-    const combined = [
-      ...posts.map(toPostItem),
-      ...reelsRaw.map(toReelItem),
-    ];
-
+    const combined = [...posts.map(toPostItem), ...reelsRaw.map(toReelItem)];
     combined.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
     const slice = combined.slice(start, end);
 
     res.set({
       "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      "Pragma": "no-cache",
-      "Expires": "0",
+      Pragma: "no-cache",
+      Expires: "0",
       "Surrogate-Control": "no-store",
       "X-Feed-Page": String(page),
       "X-Feed-Limit": String(limit),
@@ -380,7 +369,7 @@ exports.likePost = async (req, res) => {
 
     const updated = await Post.findByIdAndUpdate(
       postId,
-      { $addToSet: { likes: req.user._id } }, // atomic → no duplicates
+      { $addToSet: { likes: req.user._id } },
       { new: true, runValidators: false }
     ).select("likes userId");
 
@@ -419,7 +408,7 @@ exports.unlikePost = async (req, res) => {
 
     const updated = await Post.findByIdAndUpdate(
       postId,
-      { $pull: { likes: req.user._id } }, // atomic
+      { $pull: { likes: req.user._id } },
       { new: true, runValidators: false }
     ).select("likes");
 
@@ -455,13 +444,12 @@ exports.commentPost = async (req, res) => {
 
     const updated = await Post.findByIdAndUpdate(
       postId,
-      { $push: { comments: newComment } }, // atomic append
+      { $push: { comments: newComment } },
       { new: true, runValidators: false }
     ).select("comments userId");
 
     if (!updated) return res.status(404).json({ message: "Post not found" });
 
-    // notify owner
     if (updated.userId.toString() !== actorId) {
       try {
         const actor = await User.findById(actorId).select("username");
@@ -537,6 +525,31 @@ exports.deletePost = async (req, res) => {
     res.status(200).json({ message: "Post deleted successfully" });
   } catch (err) {
     console.error("deletePost error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ------------------------------ 👁️ Views APIs ------------------------------ */
+/** Call when an image/video post is actually viewed (e.g., after 1–2s on screen). */
+exports.incrementPostView = async (req, res) => {
+  try {
+    const { id } = req.params; // :id = postId
+    await Post.findByIdAndUpdate(id, { $inc: { views: 1 } }, { lean: true });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("incrementPostView error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/** Call when a reel starts playing (e.g., on prepared/play). */
+exports.incrementReelView = async (req, res) => {
+  try {
+    const { id } = req.params; // :id = reelId
+    await Reel.findByIdAndUpdate(id, { $inc: { views: 1 } }, { lean: true });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("incrementReelView error:", err);
     res.status(500).json({ message: err.message });
   }
 };
