@@ -6,8 +6,8 @@ const postCtrl = require("../controllers/postController");
 const auth = require("../middleware/auth");
 const Post = require("../models/Post"); // for isAdultish()
 
-/* ---- Sanity checks (helpful in deploy logs) ---- */
-const requiredFns = [
+/* ---- Sanity checks (useful in logs) ---- */
+[
   "createPost",
   "getAllPosts",
   "getReelsFeed",
@@ -18,9 +18,8 @@ const requiredFns = [
   "commentPost",
   "getComments",
   "deletePost",
-];
-
-requiredFns.forEach((fn) => {
+  "incrementPostView", // 👁️ make sure controller has this
+].forEach((fn) => {
   if (typeof postCtrl[fn] !== "function") {
     console.error(`[postRoutes] Missing controller function: ${fn}`);
   }
@@ -57,34 +56,35 @@ function rejectAdultUploads(req, res, next) {
    POSTS ROUTES (mounted under /api/posts)
    ───────────────────────────────────────── */
 
-// Create a new post (auth → strip fields → reject adult → controller)
+// Create a new post
 router.post("/", auth, stripClientModerationFields, rejectAdultUploads, postCtrl.createPost);
 
-// Global feed (merged posts+reels, shuffled each request, ARRAY body)
+// Global feed (posts + reels, ARRAY body, shuffled each request)
 router.get("/", auth, postCtrl.getAllPosts);
 
-// Reels-only feed (shuffled, ARRAY body)
+// Reels-only feed (ARRAY body, shuffled)
 router.get("/reels", auth, postCtrl.getReelsFeed);
 
-// Profile feed (user’s posts+reels, ARRAY body)
+// Profile feed (user’s posts + reels)
 router.get("/user/:userId", auth, postCtrl.getPostsByUser);
 
 // Get comments for a post
 router.get("/comments/:id", auth, postCtrl.getComments);
 
-// Like a post
+// Like / Unlike
 router.put("/like/:id", auth, postCtrl.likePost);
-
-// Unlike a post
 router.put("/unlike/:id", auth, postCtrl.unlikePost);
 
-// Add a comment to a post
+// Comment
 router.post("/comment/:id", auth, postCtrl.commentPost);
 
-// Get a single post by ID (detail)
+// 👁️ Increment post view count (call when media becomes visible/starts)
+router.post("/:id/view", auth, postCtrl.incrementPostView);
+
+// Single post by ID
 router.get("/:id", auth, postCtrl.getPostById);
 
-// Delete a post (owner only)
+// Delete post (owner only)
 router.delete("/:id", auth, postCtrl.deletePost);
 
 module.exports = router;
