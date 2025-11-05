@@ -47,10 +47,11 @@ function extractCloudinaryPublicId(url = "") {
   }
 }
 
+/* Fresh reel with needed populates */
 async function freshReel(reelId) {
   return Reel.findById(reelId)
     .populate("userId", "username profilePic")
-    .populate("comments.user", "username profilePic")
+    .populate("comments.userId", "username profilePic")
     .populate("likes", "username profilePic");
 }
 
@@ -62,6 +63,7 @@ function sendReel(res, reel, okMsg = "OK") {
     reel,
     likesCount: reel.likes?.length || 0,
     commentsCount: reel.comments?.length || 0,
+    views: typeof reel.views === "number" ? reel.views : 0,
   });
 }
 
@@ -88,6 +90,7 @@ exports.uploadReel = async (req, res) => {
       videoUrl: cld.secure_url,
       videoPublicId: cld.public_id, // e.g. "reels/abc123"
       caption: req.body.caption,
+      // views defaults to 0 in model (make sure field exists there)
     });
 
     const populated = await freshReel(reel._id);
@@ -126,7 +129,7 @@ exports.getReelsFeed = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(poolSize)
       .populate("userId", "username profilePic")
-      .populate("comments.user", "username profilePic")
+      .populate("comments.userId", "username profilePic")
       .lean();
 
     const items = reelsRaw.map((r) => ({
@@ -142,11 +145,12 @@ exports.getReelsFeed = async (req, res) => {
       likes: r.likes || [],
       likesCount: (r.likes || []).length,
       comments: (r.comments || []).map((c) => ({
-        user: c.user, // populated
+        userId: c.userId, // populated
         text: c.text,
         createdAt: c.createdAt,
       })),
       commentsCount: (r.comments || []).length,
+      views: typeof r.views === "number" ? r.views : 0,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
@@ -207,14 +211,13 @@ exports.getAllReels = async (req, res) => {
     const start = (page - 1) * limit;
     const end = start + limit;
 
-    // pull a pool so we can compute counts before slicing
     const poolSize = limit * FETCH_POOL_MULTIPLIER;
 
     const reels = await Reel.find()
       .sort({ createdAt: -1 })
       .limit(poolSize)
       .populate("userId", "username profilePic")
-      .populate("comments.user", "username profilePic");
+      .populate("comments.userId", "username profilePic");
 
     const mapped = reels.map((r) => {
       const obj = r.toObject();
@@ -222,6 +225,7 @@ exports.getAllReels = async (req, res) => {
         ...obj,
         commentsCount: r.comments?.length || 0,
         likesCount: r.likes?.length || 0,
+        views: typeof r.views === "number" ? r.views : 0,
       };
     });
 
@@ -348,7 +352,7 @@ exports.commentReel = async (req, res) => {
       {
         $push: {
           comments: {
-            user: new mongoose.Types.ObjectId(actorId),
+            userId: new mongoose.Types.ObjectId(actorId),
             text,
             createdAt: new Date(),
           },
@@ -381,7 +385,7 @@ exports.commentReel = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────
-   ✅ Get reel comments (paged in DB optional later)
+   ✅ Get reel comments
    Public/Protected
    ───────────────────────────────────────── */
 exports.getReelComments = async (req, res) => {
@@ -389,7 +393,7 @@ exports.getReelComments = async (req, res) => {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(400).json({ message: "Invalid Reel ID" });
 
-    const reel = await Reel.findById(id).populate("comments.user", "username profilePic");
+    const reel = await Reel.findById(id).populate("comments.userId", "username profilePic");
     if (!reel) return res.status(404).json({ message: "Reel not found" });
 
     res.json(reel.comments || []);
@@ -427,6 +431,23 @@ exports.deleteReel = async (req, res) => {
     res.status(200).json({ message: "Reel deleted successfully" });
   } catch (err) {
     console.error("deleteReel error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/* ─────────────────────────────────────────
+   👁️ Increment view count (call when reel starts playing)
+   Protected (or make public if you prefer)
+   ───────────────────────────────────────── */
+exports.incrementReelView = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: "Invalid Reel ID" });
+
+    await Reel.findByIdAndUpdate(id, { $inc: { views: 1 } }, { new: false, lean: true });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("incrementReelView error:", err);
     res.status(500).json({ message: err.message });
   }
 };
