@@ -25,8 +25,8 @@ let reels;
       // eslint-disable-next-line import/no-dynamic-require, global-require
       reels = require(p);
       break;
-    } catch (e) {
-      // keep trying
+    } catch (_) {
+      // keep trying next candidate
     }
   }
   if (!reels) {
@@ -36,16 +36,43 @@ let reels;
   }
 }
 
+/* Destructure what we expect; keep the object too so we can conditionally mount */
 const {
   uploadReel,
   getAllReels,
+  getReelsFeed,        // 🔥 shuffled feed (if present in controller)
   getReelById,
   getReelComments,
   likeReel,
   dislikeReel,
   commentReel,
   deleteReel,
+  incrementReelView,   // 👁️ optional view counter
 } = reels;
+
+/* ─────────────────────────────────────────
+   Sanity logging (helpful in deploy logs)
+   ───────────────────────────────────────── */
+[
+  "uploadReel",
+  "getAllReels",
+  "getReelsFeed",
+  "getReelById",
+  "getReelComments",
+  "likeReel",
+  "dislikeReel",
+  "commentReel",
+  "deleteReel",
+  "incrementReelView",
+].forEach((fn) => {
+  if (typeof reels[fn] !== "function") {
+    console.warn(`[reelRoutes] Controller function missing or not a function: ${fn}`);
+  }
+});
+
+if (typeof auth !== "function") {
+  console.error("[reelRoutes] Missing auth middleware — check ../middleware/auth export/path");
+}
 
 /* ─────────────────────────────────────────
    REELS ROUTES  (mounted under /api/reels)
@@ -54,10 +81,15 @@ const {
 // 🎥 Upload a new reel (multipart: field name "reel", plus "caption")
 router.post("/upload", auth, upload.single("reel"), uploadReel);
 
-// 📥 Get all reels (public)
+// 🧪 Shuffled reels feed (ARRAY body, scored + jitter) — if provided
+if (typeof getReelsFeed === "function") {
+  router.get("/feed", getReelsFeed); // public; will soft-boost follow if authed
+}
+
+// 📥 Get all reels (newest first, ARRAY body)
 router.get("/", getAllReels);
 
-// 💬 Get comments of a reel (public or protect if you prefer)
+// 💬 Get comments of a reel (public)
 router.get("/comments/:id", getReelComments);
 
 // 🆔 Get single reel (public)
@@ -71,6 +103,11 @@ router.put("/dislike/:id", auth, dislikeReel);
 
 // 💬 Comment on a reel
 router.post("/comment/:id", auth, commentReel);
+
+// 👁️ Increment reel view count (call when video starts playing / >1s visible)
+if (typeof incrementReelView === "function") {
+  router.post("/:id/view", auth, incrementReelView);
+}
 
 // ❌ Delete a reel (owner only)
 router.delete("/:id", auth, deleteReel);
