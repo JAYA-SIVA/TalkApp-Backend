@@ -5,44 +5,47 @@ const User = require("../models/User");
 
 const isObjectId = (id) => mongoose.Types.ObjectId.isValid(String(id || "").trim());
 
+/** Extract token from Authorization, X-Access-Token, Cookie, or (optional) query */
+function extractToken(req) {
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  if (authHeader && typeof authHeader === "string") {
+    const [scheme, value] = authHeader.split(" ");
+    if (/^Bearer$/i.test(scheme) && value) return value.trim();
+    if (/^Token$/i.test(scheme) && value) return value.trim();
+  }
+  if (req.headers["x-access-token"]) return String(req.headers["x-access-token"]).trim();
+  if (req.cookies?.accessToken) return String(req.cookies.accessToken).trim();
+  // uncomment if you really want to allow ?token=
+  // if (req.query?.token) return String(req.query.token).trim();
+  return null;
+}
+
 /**
  * Access-token guard
- * - Looks for token in:
- *   1) Authorization: Bearer <token>
- *   2) X-Access-Token header
- *   3) Cookie: accessToken=<token>
+ * - Accepts token from Authorization (Bearer/Token), X-Access-Token, cookies
+ * - Verifies with ACCESS_TOKEN_SECRET (or fallback JWT_SECRET)
+ * - Attaches req.user (doc) & req.auth.userId (string)
  */
 module.exports = async function protect(req, res, next) {
   try {
-    // 1) Get token from headers/cookie
-    let token = null;
-    const authHeader = req.headers.authorization || req.headers.Authorization;
+    if (req.method === "OPTIONS") return next(); // CORS preflight
 
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      token = authHeader.slice(7).trim();
-    } else if (req.headers["x-access-token"]) {
-      token = String(req.headers["x-access-token"]).trim();
-    } else if (req.cookies?.accessToken) {
-      token = String(req.cookies.accessToken).trim();
-    }
-
+    const token = extractToken(req);
     if (!token) {
-      return res.status(401).json({ message: "Unauthorized: no access token" });
+      return res.status(401).json({ code: "NO_TOKEN", message: "Unauthorized: no access token" });
     }
 
-    // 2) Verify token
-    const secret = (process.env.ACCESS_TOKEN_SECRET || "").trim();
+    const secret = (process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET || "").trim();
     if (!secret) {
-      console.error("[auth] ACCESS_TOKEN_SECRET is missing");
-      return res.status(500).json({ message: "Server configuration error" });
+      console.error("[auth] ACCESS_TOKEN_SECRET/JWT_SECRET is missing");
+      return res.status(500).json({ code: "SERVER_CONFIG", message: "Server configuration error" });
     }
 
     const verifyOpts = {
-      // uncomment if you set these when issuing tokens
+      algorithms: ["HS256"],
+      clockTolerance: 5, // seconds
       // issuer: process.env.JWT_ISSUER,
       // audience: process.env.JWT_AUDIENCE,
-      algorithms: ["HS256"],
-      clockTolerance: 5, // seconds of leeway for minor clock drift
     };
 
     let decoded;
@@ -50,39 +53,35 @@ module.exports = async function protect(req, res, next) {
       decoded = jwt.verify(token, secret, verifyOpts);
     } catch (err) {
       if (err.name === "TokenExpiredError") {
-        return res.status(401).json({ message: "Token expired. Please login again." });
+        return res.status(401).json({ code: "TOKEN_EXPIRED", message: "Token expired. Please login again." });
       }
-      return res.status(401).json({ message: "Invalid access token" });
+      return res.status(401).json({ code: "TOKEN_INVALID", message: "Invalid access token" });
     }
 
-    // 3) Resolve user id (support both "id" and standard "sub")
-    const uid = decoded.id || decoded.sub;
+    const uid = decoded.id || decoded._id || decoded.sub;
     if (!isObjectId(uid)) {
-      return res.status(400).json({ message: "Invalid token payload (user id)" });
+      return res.status(400).json({ code: "BAD_TOKEN_SUBJECT", message: "Invalid token payload (user id)" });
     }
 
-    // 4) Load user (minimal projection; exclude password)
     const user = await User.findById(uid).select("-password");
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({ code: "USER_NOT_FOUND", message: "User not found" });
     }
 
-    // 5) Blocked checks (optional)
     if (user.isBlocked) {
-      return res.status(403).json({ message: "Access denied: user is blocked" });
+      return res.status(403).json({ code: "USER_BLOCKED", message: "Access denied: user is blocked" });
     }
 
-    // 6) Attach to request
     req.user = user;
     req.auth = {
       userId: String(user._id),
-      token, // sometimes useful for downstream (e.g., logging)
-      // roles: user.roles || [], // if you have roles
+      token,
+      // roles: user.roles || [],
     };
 
     return next();
   } catch (error) {
-    console.error("[auth] Unexpected error:", error.message);
-    return res.status(401).json({ message: "Unauthorized" });
+    console.error("[auth] Unexpected error:", error);
+    return res.status(401).json({ code: "AUTH_FAILURE", message: "Unauthorized" });
   }
 };
